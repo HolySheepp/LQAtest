@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from .base import OcrEngine, OcrLine, OcrResult
+from .base import OcrEngine, OcrLine, OcrResult, order_lines
 
 
 class RapidOcrEngine(OcrEngine):
@@ -21,18 +21,36 @@ class RapidOcrEngine(OcrEngine):
         self._engine = self._create()
 
     @staticmethod
-    def _create() -> Any:
-        # RapidOCR 啟動時會印一堆模型載入 INFO，錄製時會蓋掉句子列表
-        logging.getLogger("RapidOCR").setLevel(logging.WARNING)
+    def _quiet() -> None:
+        """壓掉 RapidOCR 啟動時那一整排模型載入 INFO，免得蓋掉錄製的句子列表。
+
+        不能只用 setLevel：RapidOCR 每個模組取 logger 時都會自己
+        setLevel(INFO)，會把我們的設定蓋回去。改掛 filter，
+        filter 不會被 setLevel 清掉。
+        """
+        logger = logging.getLogger("RapidOCR")
+        if any(getattr(f, "_lqa_quiet", False) for f in logger.filters):
+            return
+
+        def drop_info(record: logging.LogRecord) -> bool:
+            return record.levelno >= logging.WARNING
+
+        drop_info._lqa_quiet = True  # type: ignore[attr-defined]
+        logger.addFilter(drop_info)
+
+    @classmethod
+    def _create(cls) -> Any:
         try:
             from rapidocr import RapidOCR  # noqa: PLC0415
 
+            cls._quiet()
             return RapidOCR()
         except ImportError:
             pass
         try:
             from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
+            cls._quiet()
             return RapidOCR()
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
@@ -96,13 +114,7 @@ class RapidOcrEngine(OcrEngine):
         if not lines:
             return OcrResult()
 
-        # 依垂直位置排序，多行對白才不會亂序
-        def sort_key(line: OcrLine) -> tuple[float, float]:
-            if line.box is None:
-                return (0.0, 0.0)
-            return (float(line.box[1]), float(line.box[0]))
-
-        lines.sort(key=sort_key)
+        lines = order_lines(lines)
         text = self.join_with.join(ln.text.strip() for ln in lines if ln.text.strip())
         confidence = sum(ln.confidence for ln in lines) / len(lines)
         return OcrResult(text=text.strip(), confidence=confidence, lines=lines)

@@ -30,6 +30,46 @@ class OcrResult:
         return not self.text.strip()
 
 
+def order_lines(lines: list[OcrLine]) -> list[OcrLine]:
+    """把偵測框排成人類閱讀順序：先分行，行內再由左到右。
+
+    不能直接按 y 座標排序。OCR 會把一行對白切成好幾個框，
+    同一行各框的 y_min 會因為字母升部與降部差好幾個像素，
+    嚴格按 y 排就會讓相鄰兩行交錯，整句被打散。
+
+    做法是先用框高推出容差，把垂直中心夠接近的框歸成同一行，
+    行間按 y 排、行內按 x 排。
+    """
+    boxed = [ln for ln in lines if ln.box is not None]
+    unboxed = [ln for ln in lines if ln.box is None]
+    if not boxed:
+        return list(lines)
+
+    def y_center(ln: OcrLine) -> float:
+        return (ln.box[1] + ln.box[3]) / 2.0  # type: ignore[index]
+
+    heights = sorted(ln.box[3] - ln.box[1] for ln in boxed)  # type: ignore[index]
+    median_height = heights[len(heights) // 2]
+    tolerance = max(4.0, median_height * 0.6)
+
+    boxed.sort(key=y_center)
+    rows: list[list[OcrLine]] = []
+    row_centers: list[float] = []
+    for item in boxed:
+        center = y_center(item)
+        if rows and abs(center - row_centers[-1]) <= tolerance:
+            rows[-1].append(item)
+        else:
+            rows.append([item])
+            row_centers.append(center)
+
+    ordered: list[OcrLine] = []
+    for row in rows:
+        row.sort(key=lambda ln: ln.box[0])  # type: ignore[index]
+        ordered.extend(row)
+    return ordered + unboxed
+
+
 class OcrEngine(ABC):
     @abstractmethod
     def read(self, image: np.ndarray) -> OcrResult:

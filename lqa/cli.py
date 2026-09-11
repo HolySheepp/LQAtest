@@ -65,6 +65,40 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_probe(args: argparse.Namespace) -> int:
+    from .tools_probe import run_probe
+
+    return run_probe(
+        profile_path=Path(args.profile),
+        out_dir=Path(args.out),
+        samples=args.samples,
+        interval=args.interval,
+        image=Path(args.image) if args.image else None,
+    )
+
+
+def _cmd_show_session(args: argparse.Namespace) -> int:
+    from .compare.normalize import display_key, has_cjk, strip_speaker_id
+    from .record.store import load_session
+
+    lines = load_session(args.session)
+    print(f"共 {len(lines)} 句，來源：{args.session}")
+    print("")
+    width = args.width
+    for line in lines:
+        body = display_key(line.body_text)
+        if not args.full and len(body) > width:
+            body = body[: width - 3] + "..."
+        speaker = strip_speaker_id(line.speaker_text)
+        prefix = f"[{speaker}] " if speaker else ""
+        flag = " <中文>" if has_cjk(line.body_text) else ""
+        print(f"{line.seq + 1:>4}. {prefix}{body}{flag}")
+        if args.verbose:
+            print(f"      信心值 {line.body_conf:.3f}  穩定 {line.stable_ms}ms  "
+                  f"截圖 {line.screenshot}")
+    return 0
+
+
 def _cmd_record(args: argparse.Namespace) -> int:
     from .record.recorder import Recorder
     from .record.store import SessionStore
@@ -188,6 +222,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--script", required=True)
     p.add_argument("--sheet", default=None)
     p.set_defaults(func=_cmd_colors)
+
+    p = sub.add_parser("probe", help="抓一張畫面診斷 profile，正式錄製前先跑這個")
+    p.add_argument("--profile", default="config/profile.json")
+    p.add_argument("--out", default="debug", help="診斷圖檔輸出目錄")
+    p.add_argument("--samples", type=int, default=1, help="連抓幾張")
+    p.add_argument("--interval", type=float, default=1.0, help="每張之間隔幾秒")
+    p.add_argument("--image", default=None,
+                   help="改為診斷現成截圖，不抓螢幕（尺寸需與校準時一致）")
+    p.set_defaults(func=_cmd_probe)
+
+    p = sub.add_parser("show-session", help="列出某次錄製抓到的所有句子")
+    p.add_argument("session", help="session 目錄")
+    p.add_argument("--full", action="store_true", help="不截斷長句")
+    p.add_argument("--width", type=int, default=80, help="截斷寬度")
+    p.add_argument("--verbose", action="store_true", help="一併顯示信心值與截圖路徑")
+    p.set_defaults(func=_cmd_show_session)
 
     p = sub.add_parser("record", help="錄製一段對話")
     p.add_argument("--profile", default="config/profile.json")

@@ -94,37 +94,77 @@ s           存檔並進入下一步    q / Esc  放棄離開
 .venv/Scripts/python.exe -m lqa calibrate --window 雷電模擬器 --profile config/profile.json --script scripts/你的文本.xlsx
 ```
 
-### 2. 錄製
+### 2. 診斷（正式錄製前一定要跑）
 
-把遊戲文字速度調到二倍速，然後正常手動遊玩：
+校準存檔不代表參數是對的。錄製本身不會告訴你「遮罩把字吃掉了」或
+「ROI 框到背景了」，但 `probe` 會。讓遊戲停在一句有對白的畫面，然後：
 
 ```bash
-python -m lqa record --profile config/profile.json --name ch1_school
+.venv/Scripts/python.exe -m lqa probe --profile config/profile.json
+```
+
+它會抓一張畫面，印出每個 ROI 的遮罩覆蓋率與 OCR 實際讀到的內容，
+並把原圖與遮罩存成 PNG 到 `debug/`。
+
+判斷標準：
+
+- **OCR 讀到的內容要和畫面上的字一字不差**（發話者的 `(11201)` 會保留，那正常，比對時才剝）
+- 覆蓋率大致落在 3% ~ 12%。低於 `min_text_pixels` 或高於 15% 會出警告
+- 打開 `*_遮罩.png`：應該只剩文字筆畫、背景全黑，而且**每個字都在**
+
+有問題時的對策：
+
+| 症狀 | 對策 |
+| --- | --- |
+| 覆蓋率過高、遮罩一片白 | ROI 框到背景，重新校準框緊一點；或用 `[` `]` 把門檻調高 |
+| 變色字整段不見 | 取字方式不是 `value`，重新校準時按 `1` |
+| 有文字像素但 OCR 讀不出來 | `mask.upscale` 調大到 3，或 `ocr.source` 改成 `gray` |
+| 多行對白順序錯亂 | 回報給我，這是 bug |
+
+也可以直接診斷現成截圖，不必開著模擬器（截圖尺寸需與校準時一致）：
+
+```bash
+.venv/Scripts/python.exe -m lqa probe --profile config/profile.json --image 你的截圖.png
+```
+
+### 3. 錄製
+
+把遊戲文字速度調到二倍速，然後正常手動遊玩。
+**第一次先錄十句就好**，確認沒問題再跑長的：
+
+```bash
+.venv/Scripts/python.exe -m lqa record --profile config/profile.json --name smoke --max-lines 10
 ```
 
 程式會等文字停止變動才擷取，所以打字機效果不會造成半句被記錄。
-終端機會即時列出抓到的每一句，按 Ctrl+C 結束。結果存在 `sessions/<時間戳>_ch1_school/`。
+終端機會即時列出抓到的每一句，按 Ctrl+C 結束。結果存在 `sessions/<時間戳>_smoke/`。
+
+錄完回頭檢查抓到什麼：
+
+```bash
+.venv/Scripts/python.exe -m lqa show-session sessions/20260911_143000_smoke --full
+```
+
+要確認的是：**句數和你點過的句數一致**（沒有漏句、沒有重複），
+而且每一句的文字和畫面相符。確認無誤再拿掉 `--max-lines` 正式錄整章。
 
 一章分好幾次錄沒問題，比對時把多個 session 依序傳進去即可。
 
-### 3. 比對
+### 4. 比對
 
 準備發話者中英對照表（參考 `config/speakers.example.csv`），然後：
 
 ```bash
-python -m lqa compare ^
-  --script 2026_校園活動_全線文本_EN.xlsx ^
-  --speakers config/speakers.csv ^
-  --session sessions/20260911_143000_ch1_school ^
-  --out reports/ch1_school
+.venv/Scripts/python.exe -m lqa compare --script scripts/你的文本.xlsx --speakers config/speakers.csv --session sessions/20260911_143000_smoke --out reports/smoke --show 10
 ```
 
-輸出 `reports/ch1_school.xlsx`（含摘要與明細，依分類上色）與同名 `.csv`。
+輸出 `reports/smoke.xlsx`（含摘要與明細，依分類上色）與同名 `.csv`，
+`--show 10` 會順便在終端機印出前 10 筆問題。
 
 比對前可以先確認文本讀得對：
 
 ```bash
-python -m lqa check-script --script 你的文本.xlsx --speakers config/speakers.csv
+.venv/Scripts/python.exe -m lqa check-script --script scripts/你的文本.xlsx --speakers config/speakers.csv
 ```
 
 ## 分類定義
@@ -255,6 +295,7 @@ lqa/
   record/               錄製主迴圈與 session 儲存
   compare/              正規化、文本讀取、序列對齊、分類、報告
   tools_calibrate.py    ROI 框選與遮罩預覽
+  tools_probe.py        單張診斷：印出遮罩覆蓋率與 OCR 結果並存圖
   cli.py                命令列入口
 tests/                  離線比對邏輯的測試（不需要遊戲即可跑）
 ```
@@ -262,10 +303,27 @@ tests/                  離線比對邏輯的測試（不需要遊戲即可跑�
 ## 測試
 
 ```bash
-python -m pytest tests -q
+.venv/Scripts/python.exe -m pytest tests -q
 ```
 
-測試涵蓋正規化、文本解析、序列對齊與六類分類，全部不需要遊戲或 OCR 即可執行。
+涵蓋正規化、文本解析、序列對齊、六類分類、OCR 排序，
+以及用合成畫面驗證的取字與穩定偵測。除了一項 OCR 整合測試之外，
+全部不需要遊戲也不需要 OCR 即可執行（未裝 OCR 時該項自動略過）。
+
+## 指令總覽
+
+| 指令 | 用途 |
+| --- | --- |
+| `windows` | 列出所有視窗標題，用來找雷電的標題 |
+| `calibrate` | 框選對白框與姓名框，各調一組遮罩參數 |
+| `probe` | 抓一張畫面診斷 profile，正式錄製前跑 |
+| `record` | 錄製，把畫面上的對白一句一句記下來 |
+| `show-session` | 列出某次錄製抓到的所有句子 |
+| `check-script` | 檢查翻譯文本能不能正確解析 |
+| `colors` | 掃出文本用過的所有文字顏色 |
+| `compare` | 比對並輸出報告 |
+
+每個指令都可以加 `--help` 看完整參數。
 
 ## 後續規劃
 
