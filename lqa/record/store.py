@@ -45,15 +45,18 @@ class SessionStore:
         )
 
     def save_screenshot(self, frame: np.ndarray, seq: int, quality: int = 85) -> str:
-        """存截圖，回傳相對於 session 目錄的路徑。"""
-        try:
-            import cv2  # noqa: PLC0415
-        except ImportError:
-            return ""
+        """存截圖，回傳相對於 session 目錄的路徑。
+
+        走 imageio 而不是 cv2.imwrite：session 目錄名稱可能含中文
+        （--name 是使用者自己取的），cv2 在 Windows 上會寫出亂碼檔名。
+        """
+        from ..imageio import imwrite  # noqa: PLC0415
+
         rel = f"shots/{seq:05d}.jpg"
-        cv2.imwrite(
-            str(self.dir / rel), frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-        )
+        try:
+            imwrite(self.dir / rel, frame, quality=quality)
+        except (ImportError, OSError):
+            return ""
         return rel
 
     def append(self, line: CapturedLine) -> None:

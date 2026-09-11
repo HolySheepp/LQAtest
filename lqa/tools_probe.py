@@ -17,6 +17,7 @@ from typing import Optional
 import numpy as np
 
 from .config import MaskConfig, Profile, Rect
+from .imageio import imread, imwrite
 
 # 遮罩覆蓋率高於此值，多半是 ROI 框到背景或門檻太鬆
 _COVERAGE_WARN = 0.15
@@ -31,6 +32,27 @@ def _require_cv2():
     except ImportError as exc:
         raise ImportError("診斷需要 opencv：pip install opencv-python") from exc
     return cv2
+
+
+def _draw_rois(cv2, frame: np.ndarray, profile: Profile) -> np.ndarray:
+    """把 ROI 畫在整張畫面上，用來確認框的範圍對不對。
+
+    「文字貼齊邊緣」的提示光看數字判斷不出是真超框還是 ROI 框太小，
+    看這張圖最快：文字要完整落在框內，而且和框邊留一點空隙。
+    """
+    canvas = frame.copy()
+    boxes = (
+        ("body", profile.body_roi, (0, 220, 0)),
+        ("speaker", profile.speaker_roi, (255, 160, 0)),
+    )
+    for label, roi, color in boxes:
+        if not roi:
+            continue
+        x, y, w, h = roi
+        cv2.rectangle(canvas, (x, y), (x + w, y + h), color, 1)
+        cv2.putText(canvas, label, (x, max(12, y - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+    return canvas
 
 
 def _describe(
@@ -88,16 +110,17 @@ def _describe(
     bottom, right = tm.touches_edges(mask, 3)
     if bottom or right:
         edges = "、".join(e for e, hit in (("下緣", bottom), ("右緣", right)) if hit)
-        print(f"  [提示] 文字貼齊 {edges}，可能是超框，也可能只是 ROI 框太緊")
+        print(f"  [警告] 文字貼齊 ROI {edges}，很可能是框太小正在切掉文字。"
+              "打開 ROI標示.png 確認文字有沒有完整落在框內")
 
     stem = f"{index:02d}_{label}"
-    cv2.imwrite(str(out_dir / f"{stem}_原圖.png"), crop)
-    cv2.imwrite(str(out_dir / f"{stem}_遮罩.png"), mask)
+    imwrite(out_dir / f"{stem}_原圖.png", crop)
+    imwrite(out_dir / f"{stem}_遮罩.png", mask)
 
     # 存下真正送進 OCR 的那張圖。OCR 讀不好時，答案幾乎都在這張圖上，
     # 看原圖和遮罩是看不出來的。
     ocr_image = _ocr_input(crop, mask, cfg, ocr_source)
-    cv2.imwrite(str(out_dir / f"{stem}_送進OCR.png"), ocr_image)
+    imwrite(out_dir / f"{stem}_送進OCR.png", ocr_image)
     print(f"  送進 OCR     {ocr_source}  放大 {cfg.upscale} 倍  "
           f"-> {ocr_image.shape[1]} x {ocr_image.shape[0]}")
 
@@ -119,7 +142,7 @@ def _describe(
             print("  各種取字方式比較（挑辨識最準的填進 profile 的 ocr.source）：")
             for name in OCR_SOURCES:
                 candidate = _ocr_input(crop, mask, cfg, name)
-                cv2.imwrite(str(out_dir / f"{stem}_送進OCR_{name}.png"), candidate)
+                imwrite(out_dir / f"{stem}_送進OCR_{name}.png", candidate)
                 outcome = engine.read(candidate)
                 marker = " <-- 目前使用" if name == ocr_source else ""
                 print(f"    {name:<12} {outcome.confidence:.3f}  "
@@ -161,7 +184,8 @@ def run_probe(
     def inspect(frame: np.ndarray, index: int, source: str) -> None:
         print(f"=== 第 {index} 張  來源 {source}  尺寸 "
               f"{frame.shape[1]} x {frame.shape[0]} ===")
-        cv2.imwrite(str(out_dir / f"{index:02d}_全畫面.png"), frame)
+        imwrite(out_dir / f"{index:02d}_全畫面.png", frame)
+        imwrite(out_dir / f"{index:02d}_ROI標示.png", _draw_rois(cv2, frame, profile))
         _describe(cv2, "對白框", frame, profile.body_roi, profile.mask,
                   engine, out_dir, index, profile.ocr.source, compare_sources)
         _describe(cv2, "姓名框", frame, profile.speaker_roi,
@@ -169,7 +193,7 @@ def run_probe(
                   profile.ocr.source, compare_sources)
 
     if image is not None:
-        frame = cv2.imread(str(image), cv2.IMREAD_COLOR)
+        frame = imread(image)
         if frame is None:
             raise FileNotFoundError(f"讀不到圖檔：{image}")
         inspect(frame, 1, str(image))
@@ -184,5 +208,7 @@ def run_probe(
             capture.close()
 
     print(f"圖檔已存到：{out_dir.resolve()}")
-    print("打開 *_遮罩.png 確認：應該只剩文字筆畫，背景全黑，而且每個字都在。")
+    print("  *_ROI標示.png   文字要完整落在框內，而且和框邊留一點空隙")
+    print("  *_遮罩.png      應該只剩文字筆畫，背景全黑，而且每個字都在")
+    print("  *_送進OCR.png   OCR 讀不好時，答案通常在這張圖上")
     return 0
