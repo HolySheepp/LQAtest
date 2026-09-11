@@ -36,11 +36,14 @@ class MaskConfig:
 
     method: str = "value"       # value | colorkey | bright | otsu | adaptive
     invert: bool = False        # 深色底淺色字時不用開；淺底深字才開
-    upscale: int = 2            # OCR 前放大倍率，小字很吃這個
+    upscale: int = 3            # OCR 前放大倍率，小字很吃這個
     clahe: bool = False         # 只對 otsu / adaptive 有意義，會破壞絕對門檻
     blur: int = 0               # 中值濾波核大小，0 表示不做。
                                 # 小字不要開，中值濾波會吃掉細筆畫
-    bright_threshold: int = 170  # bright 與 value 共用的門檻
+    # bright 與 value 共用的門檻。實測掃描：亮場景下 85 與 140 的辨識率是
+    # 100% 與 99%，170 掉到 83%、200 只剩 32%。門檻太高會只留下筆畫核心
+    # 把字挖空。140 在辨識率與遮罩乾淨度之間取得平衡。
+    bright_threshold: int = 140
     color_tolerance: int = 60   # colorkey 的容許色距（BGR 歐氏距離）
     # 送 OCR 前把遮罩往外膨脹幾圈，用來補回門檻砍掉的筆畫本體。
     # 變動偵測要乾淨的遮罩（門檻高），OCR 要完整的筆畫（門檻低），

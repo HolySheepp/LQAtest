@@ -17,6 +17,7 @@ from typing import Optional
 import numpy as np
 
 from .config import MaskConfig, Profile, Rect
+from .ocr.base import OcrResult
 from .imageio import imread, imwrite
 
 # 遮罩覆蓋率高於此值，多半是 ROI 框到背景或門檻太鬆
@@ -55,85 +56,119 @@ def _draw_rois(cv2, frame: np.ndarray, profile: Profile) -> np.ndarray:
     return canvas
 
 
-def _report_fit(
+def report_overlap(profile: Profile) -> bool:
+    """檢查對白框與姓名框有沒有重疊。
+
+    重疊的話姓名框會吃到第一行對白、對白框會吃到姓名的下緣，
+    兩邊的 OCR 都會被污染，而且看遮罩圖不一定看得出來。
+    """
+    body, speaker = profile.body_roi, profile.speaker_roi
+    if not body or not speaker:
+        return False
+    bx, by, bw, bh = body
+    sx, sy, sw, sh = speaker
+    overlap_w = min(bx + bw, sx + sw) - max(bx, sx)
+    overlap_h = min(by + bh, sy + sh) - max(by, sy)
+    if overlap_w <= 0 or overlap_h <= 0:
+        return False
+    print(f"  [警告] 對白框與姓名框重疊 {overlap_w}x{overlap_h} px。"
+          f"姓名框下緣 {sy + sh}、對白框上緣 {by}，"
+          "兩邊的 OCR 會互相污染，請重新框選讓它們分開")
+    return True
+
+
+# 每一邊各自的擴張方式：(往左移, 往上移, 往右加寬, 往下加高)
+# 往左/往上擴張時只移動起點，寬高由「原本的邊界保持不動」推回來，
+# 不能再另外加 pad —— 那會讓兩邊同時變大，把隔壁的元件也框進來。
+SIDE_OFFSETS = {
+    "左": (1, 0, 0, 0),
+    "右": (0, 0, 1, 0),
+    "上": (0, 1, 0, 0),
+    "下": (0, 0, 0, 1),
+}
+
+
+def report_margins(frame: np.ndarray, roi: Rect, mask: np.ndarray) -> dict[str, int]:
+    """印出框內文字距離四邊的留白，並回傳數值。"""
+    from .detect import textmask as tm
+
+    _, _, w, h = roi
+    box = tm.content_bbox(mask)
+    if box is None:
+        return {}
+    x0, y0, x1, y1 = box
+    margins = {"上": y0, "下": h - 1 - y1, "左": x0, "右": w - 1 - x1}
+    print("  框內留白     " + "  ".join(f"{s} {g}" for s, g in margins.items()) + " px")
+    return margins
+
+
+def report_fit(
     label: str,
     frame: np.ndarray,
     roi: Rect,
     cfg: MaskConfig,
-    mask: np.ndarray,
-    pad: int = 40,
+    engine,
+    ocr_source: str,
+    base: OcrResult,
+    margins: dict[str, int],
+    pad: int = 30,
 ) -> None:
-    """檢查 ROI 框得夠不夠，並在切到字時說出每邊該再放大多少。
+    """檢查 ROI 有沒有把文字切掉，靠的是直接證據而不是猜。
 
-    做法是把 ROI 往外擴一圈重新取字，看框線外面還有沒有文字像素。
-    「文字貼齊邊緣」本身分不出是真超框還是框太小，
-    但如果框外面緊接著還有文字，那就確定是框把字切掉了。
+    做法：把 ROI 單獨往某一個方向擴張後重跑 OCR。
+    如果擴張後讀到更多字，就證明那一邊原本切掉了東西，
+    而且能直接告訴使用者被切掉的是什麼。
+
+    之前試過用像素量、密度之類的啟發式判斷框外那塊是不是被切掉的文字，
+    都不可靠：姓名框上方的角色立繪會被誤報，而框把一行字攔腰切斷時
+    外面那半反而比框內還多。改看 OCR 結果就沒有這些模糊地帶 ——
+    立繪 OCR 不出東西，被切掉的字會。
     """
+    from .compare.normalize import match_key
     from .detect import textmask as tm
+    from .record.recorder import _ocr_input
+
+    if engine is None or not margins:
+        return
 
     height, width = frame.shape[:2]
     x, y, w, h = roi
-    ex, ey = max(0, x - pad), max(0, y - pad)
-    ex2, ey2 = min(width, x + w + pad), min(height, y + h + pad)
-    outer = tm.build_mask(frame[ey:ey2, ex:ex2], cfg)
+    base_len = len(match_key(base.text))
+    base_lines = max(1, len(base.lines))
+    findings: list[str] = []
 
-    # 把 ROI 內部挖掉，只留框外的部分
-    ox, oy = x - ex, y - ey
-    outside = outer.copy()
-    outside[oy:oy + h, ox:ox + w] = 0
-
-    box = tm.content_bbox(mask)
-    if box is None:
-        return
-    x0, y0, x1, y1 = box
-    margins = {"上": y0, "下": h - 1 - y1, "左": x0, "右": w - 1 - x1}
-    print("  框內留白     " + "  ".join(f"{s} {g}" for s, g in margins.items()) + " px")
-
-    # 只取 ROI 正上/正下/正左/正右的帶狀區域，避免把斜對角的其他 UI 算進來
-    bands = {
-        "上": outside[:oy, ox:ox + w],
-        "下": outside[oy + h:, ox:ox + w],
-        "左": outside[oy:oy + h, :ox],
-        "右": outside[oy:oy + h, ox + w:],
-    }
-
-    def gap_to_edge(side: str, band: np.ndarray) -> Optional[int]:
-        """框線到框外最近一個文字像素的距離。沒有文字回 None。"""
-        if band.size == 0:
-            return None
-        if side in ("上", "下"):
-            rows = np.flatnonzero(band.any(axis=1))
-            if rows.size == 0:
-                return None
-            return int(band.shape[0] - 1 - rows.max()) if side == "上" else int(rows.min())
-        cols = np.flatnonzero(band.any(axis=0))
-        if cols.size == 0:
-            return None
-        return int(band.shape[1] - 1 - cols.max()) if side == "左" else int(cols.min())
-
-    # 判定「框把字切掉」需要兩個條件同時成立：
-    #   1. 框內的文字已經頂到那一邊
-    #   2. 框外緊鄰（幾乎沒有間隙）就還有文字
-    # 少了第二個條件，相鄰的其他 UI（姓名框下方的對白、對白框上方的姓名）
-    # 都會被誤報成切字。
-    clipped: list[str] = []
-    for side, band in bands.items():
-        if margins[side] > 3:
+    for side, (left, up, right, down) in SIDE_OFFSETS.items():
+        if margins.get(side, 99) > 3:
+            continue  # 文字根本沒頂到這一邊，不可能被切
+        nx = max(0, x - left * pad)
+        ny = max(0, y - up * pad)
+        nw = min(width - nx, w + (x - nx) + right * pad)
+        nh = min(height - ny, h + (y - ny) + down * pad)
+        if nw <= 0 or nh <= 0 or (nx, ny, nw, nh) == roi:
             continue
-        gap = gap_to_edge(side, band)
-        if gap is None or gap > 2:
-            continue
-        clipped.append(f"{side}(外側 {int(np.count_nonzero(band))}px 文字緊鄰)")
 
-    if clipped:
-        print(f"  [警告] {label}的框正在切掉文字：{'、'.join(clipped)}。"
-              "請重新校準把框放大")
+        grown = tm.crop(frame, (nx, ny, nw, nh))
+        grown_mask = tm.build_mask(grown, cfg)
+        result = engine.read(_ocr_input(grown, grown_mask, cfg, ocr_source))
+        gained = len(match_key(result.text)) - base_len
+        if gained < 2:
+            continue
+        # 多出來的字如果自成新的一行，那是隔壁的另一段文字（姓名框下方就是對白），
+        # 不是原本這行被切掉的尾巴。真正被切掉時行數不會變。
+        if len(result.lines) > base_lines:
+            continue
+        findings.append(f"{side}(多讀到 {gained} 個字元：{result.text!r})")
+
+    if findings:
+        print(f"  [警告] {label}的框正在切掉文字。往外擴 {pad}px 後 "
+              + "、".join(findings))
+        print("         請重新校準把框放大")
         return
 
     tight = [s for s, gap in margins.items() if gap <= 3]
     if tight:
         print(f"  [提示] 文字離 {'、'.join(tight)} 邊只剩不到 3px，"
-              "框外雖然沒有緊鄰的文字，仍建議留 10px 以上餘裕")
+              "擴大後沒有多讀到字，但仍建議留 10px 以上餘裕")
 
 
 def _describe(
@@ -188,7 +223,7 @@ def _describe(
         print(f"  [警告] 覆蓋率偏高，ROI 可能框到背景或門檻太鬆。"
               "打開遮罩圖確認是不是只剩文字筆畫")
 
-    _report_fit(label, frame, roi, cfg, mask)
+    margins = report_margins(frame, roi, mask)
 
     stem = f"{index:02d}_{label}"
     imwrite(out_dir / f"{stem}_原圖.png", crop)
@@ -213,6 +248,8 @@ def _describe(
         if result.is_empty and pixels >= cfg.min_text_pixels:
             print("  [警告] 遮罩有文字像素但 OCR 讀不出來。"
                   "試試把 mask.upscale 調大，或把 ocr.source 改成 gray")
+
+        report_fit(label, frame, roi, cfg, engine, ocr_source, result, margins)
 
         if compare_sources:
             print("")
@@ -263,6 +300,7 @@ def run_probe(
               f"{frame.shape[1]} x {frame.shape[0]} ===")
         imwrite(out_dir / f"{index:02d}_全畫面.png", frame)
         imwrite(out_dir / f"{index:02d}_ROI標示.png", _draw_rois(cv2, frame, profile))
+        report_overlap(profile)
         _describe(cv2, "對白框", frame, profile.body_roi, profile.mask,
                   engine, out_dir, index, profile.ocr.source, compare_sources)
         _describe(cv2, "姓名框", frame, profile.speaker_roi,

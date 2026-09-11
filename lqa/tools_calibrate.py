@@ -20,7 +20,7 @@ from typing import Optional
 
 import numpy as np
 
-from .config import MaskConfig, Profile, Rect
+from .config import MaskConfig, OcrConfig, Profile, Rect, StabilityConfig
 
 # 預覽時的切換順序，value 擺第一個因為那是建議值
 _METHODS = ("value", "colorkey", "otsu", "adaptive", "bright")
@@ -142,11 +142,24 @@ def run_calibration(
     cv2 = _require_cv2()
     from .capture.mss_backend import open_capture
 
-    capture = open_capture(window_title, region)
+    # 已經有 profile 就沿用裡面調好的參數，只換 ROI。
+    # 否則每次重框都會把辛苦調出來的門檻、放大倍率重設回預設值。
+    existing: Optional[Profile] = None
+    if profile_path.exists():
+        try:
+            existing = Profile.load(profile_path)
+            print(f"沿用現有 profile 的參數（門檻 {existing.mask.bright_threshold}、"
+                  f"放大 {existing.mask.upscale} 倍），只重新框選範圍。")
+        except (OSError, ValueError) as exc:
+            print(f"現有 profile 讀不起來（{exc}），改用預設值。")
+
+    backend = existing.capture_backend if existing else "auto"
+    capture = open_capture(window_title, region, backend)
     frame = capture.grab()
     resolved = capture.region()
     capture.close()
-    print(f"擷取來源：{resolved}  （w={resolved[2]}, h={resolved[3]}）")
+    print(f"擷取來源：{resolved}  （w={resolved[2]}, h={resolved[3]}）"
+          f"  後端 {type(capture).__name__}")
 
     body_roi = _select_roi(cv2, frame, "1. 對白框（必選）")
     if body_roi is None:
@@ -156,7 +169,10 @@ def run_calibration(
 
     print(_HELP)
 
-    body_initial = MaskConfig(text_colors=list(text_colors or ["#fefefe"]))
+    if existing is not None:
+        body_initial = replace(existing.mask)
+    else:
+        body_initial = MaskConfig(text_colors=list(text_colors or ["#fefefe"]))
     print("--- 調整對白框遮罩 ---")
     body_mask = _tune_mask(cv2, frame, body_roi, "對白框遮罩", body_initial)
     if body_mask is None:
@@ -165,12 +181,15 @@ def run_calibration(
 
     speaker_mask = None
     if speaker_roi is not None:
-        # 發話者可能是白色也可能是淺藍，colorkey 模式預設兩色都收
-        speaker_initial = replace(
-            body_mask,
-            text_colors=sorted({*(text_colors or []), "#fefefe", "#5dbcfe"}),
-            min_text_pixels=max(8, body_mask.min_text_pixels // 4),
-        )
+        if existing is not None and existing.speaker_mask is not None:
+            speaker_initial = replace(existing.speaker_mask)
+        else:
+            # 發話者可能是白色也可能是淺藍，colorkey 模式預設兩色都收
+            speaker_initial = replace(
+                body_mask,
+                text_colors=sorted({*(text_colors or []), "#fefefe", "#5dbcfe"}),
+                min_text_pixels=max(8, body_mask.min_text_pixels // 4),
+            )
         print("--- 調整姓名框遮罩 ---")
         speaker_mask = _tune_mask(cv2, frame, speaker_roi, "姓名框遮罩", speaker_initial)
         if speaker_mask is None:
@@ -183,10 +202,13 @@ def run_calibration(
         name=profile_path.stem,
         window_title=window_title,
         capture_region=None if window_title else resolved,
+        capture_backend=backend,
         body_roi=body_roi,
         speaker_roi=speaker_roi,
         mask=body_mask,
         speaker_mask=speaker_mask,
+        stability=replace(existing.stability) if existing else StabilityConfig(),
+        ocr=replace(existing.ocr) if existing else OcrConfig(),
     )
     profile.save(profile_path)
     print(f"已寫入 profile：{profile_path}")
@@ -195,4 +217,31 @@ def run_calibration(
         print(f"  姓名框 {speaker_roi}  取字方式 {speaker_mask.method}")
     else:
         print("  姓名框 未設定，將不檢查發話者")
+
+    _post_check(frame, profile)
     return 0
+
+
+def _post_check(frame, profile: Profile) -> None:
+    """校準完直接檢查一次，不要等使用者自己去跑 probe 才發現框錯了。"""
+    from .detect import textmask as tm
+    from .tools_probe import report_margins, report_overlap
+
+    print("")
+    print("--- 框選檢查 ---")
+    report_overlap(profile)
+    for label, roi, cfg in (
+        ("對白框", profile.body_roi, profile.mask),
+        ("姓名框", profile.speaker_roi, profile.effective_speaker_mask()),
+    ):
+        if roi is None:
+            continue
+        crop = tm.crop(frame, roi)
+        if crop.size == 0:
+            print(f"  {label} 超出擷取範圍")
+            continue
+        print(f"  [{label}]")
+        report_margins(frame, roi, tm.build_mask(crop, cfg))
+    print("")
+    print("四邊留白最好都有 10px 以上。接著執行 lqa probe，")
+    print("它會實際跑 OCR，並用擴框重測的方式確認有沒有切到字。")

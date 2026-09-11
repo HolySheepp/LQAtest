@@ -99,13 +99,24 @@ class TestColoredTextExtraction:
             patch = np.full((4, 4, 3), _bgr(color), np.uint8)
             assert tm.value_channel(patch).max() >= 250, f"{color} 的 V 值過低"
 
-    def test_grayscale_would_have_dropped_orange(self):
-        """對照組：說明為什麼不能用灰階亮度當門檻。"""
-        patch = np.full((4, 4, 3), _bgr(ACCENT_ORANGE), np.uint8)
-        gray_value = int(tm.to_gray(patch).max())
-        assert gray_value < MaskConfig().bright_threshold, (
-            f"#ff8a00 的灰階值是 {gray_value}，本測試假設它低於門檻"
-        )
+    def test_grayscale_badly_underestimates_saturated_colours(self):
+        """對照組：說明為什麼不能用灰階亮度當門檻。
+
+        不綁定預設門檻，直接比較同一個顏色在灰階與 V 通道下的落差：
+        白字兩者一致，橘字的灰階值卻掉了快 100，
+        代表任何一個能收白字的門檻都可能把橘字砍掉。
+        """
+        def channels(hex_color: str) -> tuple[int, int]:
+            patch = np.full((4, 4, 3), _bgr(hex_color), np.uint8)
+            return int(tm.to_gray(patch).max()), int(tm.value_channel(patch).max())
+
+        white_gray, white_value = channels(DIALOGUE_WHITE)
+        orange_gray, orange_value = channels(ACCENT_ORANGE)
+
+        assert white_value - white_gray <= 2, "白字在兩種通道下應該幾乎一樣"
+        assert orange_value >= 250, "橘字的 V 值應該和白字同一個量級"
+        assert orange_gray < 170, f"橘字的灰階值只有 {orange_gray}"
+        assert white_gray - orange_gray > 80, "灰階把橘字壓得比白字低很多"
 
     def test_value_method_captures_both_white_and_colored_words(self):
         cfg = MaskConfig(method="value")
@@ -117,8 +128,12 @@ class TestColoredTextExtraction:
         assert tm.text_pixel_count(full) > tm.text_pixel_count(white_only) * 1.1
 
     def test_bright_method_loses_the_colored_word(self):
-        """回歸測試：舊的 bright（灰階）取字方式會把變色字整段吃掉。"""
-        cfg = MaskConfig(method="bright", clahe=False)
+        """回歸測試：舊的 bright（灰階）取字方式會把變色字整段吃掉。
+
+        門檻寫死 170 而不是用預設值：這裡要驗證的是灰階本身的缺陷，
+        不該因為預設門檻調動就失去意義。
+        """
+        cfg = MaskConfig(method="bright", bright_threshold=170, clahe=False)
         full = tm.build_mask(make_dialogue_frame(self.SEGMENTS), cfg)
         white_only = tm.build_mask(
             make_dialogue_frame([s for s in self.SEGMENTS if s[1] == DIALOGUE_WHITE]), cfg
