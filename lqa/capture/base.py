@@ -23,6 +23,13 @@ class CaptureBackend(ABC):
     def grab(self) -> np.ndarray:
         """抓一張畫面。"""
 
+    def unavailable(self) -> str | None:
+        """目前抓不到有效畫面的原因（例如視窗被最小化）；正常時回 None。
+
+        這種狀況是可復原的，所以不丟例外，由呼叫端決定跳過這一幀。
+        """
+        return None
+
     def close(self) -> None:
         return None
 

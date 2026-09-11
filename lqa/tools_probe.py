@@ -55,6 +55,68 @@ def _draw_rois(cv2, frame: np.ndarray, profile: Profile) -> np.ndarray:
     return canvas
 
 
+def _report_fit(
+    label: str,
+    frame: np.ndarray,
+    roi: Rect,
+    cfg: MaskConfig,
+    mask: np.ndarray,
+    pad: int = 40,
+) -> None:
+    """檢查 ROI 框得夠不夠，並在切到字時說出每邊該再放大多少。
+
+    做法是把 ROI 往外擴一圈重新取字，看框線外面還有沒有文字像素。
+    「文字貼齊邊緣」本身分不出是真超框還是框太小，
+    但如果框外面緊接著還有文字，那就確定是框把字切掉了。
+    """
+    from .detect import textmask as tm
+
+    height, width = frame.shape[:2]
+    x, y, w, h = roi
+    ex, ey = max(0, x - pad), max(0, y - pad)
+    ex2, ey2 = min(width, x + w + pad), min(height, y + h + pad)
+    outer = tm.build_mask(frame[ey:ey2, ex:ex2], cfg)
+
+    # 把 ROI 內部挖掉，只留框外的部分
+    ox, oy = x - ex, y - ey
+    outside = outer.copy()
+    outside[oy:oy + h, ox:ox + w] = 0
+
+    bands = {
+        "上": outside[:oy, ox:ox + w],
+        "下": outside[oy + h:, ox:ox + w],
+        "左": outside[:, :ox],
+        "右": outside[:, ox + w:],
+    }
+    touch_bottom, touch_right = tm.touches_edges(mask, 3)
+    touching = {"下": touch_bottom, "右": touch_right}
+
+    # 框內文字距離各邊還有多少空隙
+    box = tm.content_bbox(mask)
+    if box is not None:
+        x0, y0, x1, y1 = box
+        print(f"  框內留白     上 {y0}  下 {h - 1 - y1}  左 {x0}  右 {w - 1 - x1} px")
+
+    clipped: list[str] = []
+    for side, band in bands.items():
+        pixels = int(np.count_nonzero(band))
+        if pixels < max(8, cfg.min_text_pixels // 4):
+            continue
+        if touching.get(side, True):
+            clipped.append(f"{side}({pixels}px)")
+
+    if clipped:
+        print(f"  [警告] {label}的框外緊鄰還有文字：{'、'.join(clipped)}。"
+              "框正在切掉文字，請重新校準把框放大")
+    elif box is not None:
+        x0, y0, x1, y1 = box
+        tight = [s for s, gap in (("上", y0), ("下", h - 1 - y1),
+                                  ("左", x0), ("右", w - 1 - x1)) if gap <= 3]
+        if tight:
+            print(f"  [提示] 文字離 {'、'.join(tight)} 邊只剩不到 3px，"
+                  "框外雖然沒偵測到文字，建議仍留 10px 以上餘裕")
+
+
 def _describe(
     cv2,
     label: str,
@@ -107,11 +169,7 @@ def _describe(
         print(f"  [警告] 覆蓋率偏高，ROI 可能框到背景或門檻太鬆。"
               "打開遮罩圖確認是不是只剩文字筆畫")
 
-    bottom, right = tm.touches_edges(mask, 3)
-    if bottom or right:
-        edges = "、".join(e for e, hit in (("下緣", bottom), ("右緣", right)) if hit)
-        print(f"  [警告] 文字貼齊 ROI {edges}，很可能是框太小正在切掉文字。"
-              "打開 ROI標示.png 確認文字有沒有完整落在框內")
+    _report_fit(label, frame, roi, cfg, mask)
 
     stem = f"{index:02d}_{label}"
     imwrite(out_dir / f"{stem}_原圖.png", crop)

@@ -16,6 +16,14 @@ from ..config import Rect
 
 _IS_WINDOWS = sys.platform == "win32"
 
+
+class WindowMinimized(RuntimeError):
+    """目標視窗被最小化，暫時抓不到畫面。
+
+    獨立成一個例外是因為它是可復原的：錄製途中使用者可能不小心最小化，
+    還原之後就能繼續，不該當成致命錯誤直接中斷整場錄製。
+    """
+
 if _IS_WINDOWS:
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
     _WNDENUMPROC = ctypes.WINFUNCTYPE(
@@ -150,6 +158,17 @@ def list_windows() -> list[WindowInfo]:
     return result
 
 
+def is_minimized(hwnd: int) -> bool:
+    """視窗是否已最小化。
+
+    最小化的視窗 GetClientRect / ClientToScreen 會回出 (-32000, -32000)
+    這類垃圾座標，照抓的話會擷取到完全無關的畫面，而且不會有任何錯誤。
+    """
+    if not _IS_WINDOWS:
+        return False
+    return bool(_user32.IsIconic(hwnd))
+
+
 def client_rect_on_screen(hwnd: int) -> Rect:
     """回傳視窗工作區（不含標題列與外框）在螢幕上的 [x, y, w, h]。"""
     if not _IS_WINDOWS:
@@ -169,6 +188,11 @@ def resolve_region(window_title: Optional[str], fallback: Optional[Rect]) -> Rec
     if window_title:
         hwnd = find_window(window_title)
         if hwnd:
+            if is_minimized(hwnd):
+                raise WindowMinimized(
+                    f"視窗「{window_title}」已最小化，抓不到畫面。"
+                    "請把模擬器還原（不必移到最前面，被其他視窗蓋住沒關係）後再試。"
+                )
             return client_rect_on_screen(hwnd)
         if fallback is None:
             raise RuntimeError(

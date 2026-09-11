@@ -13,7 +13,7 @@ import numpy as np
 
 from ..config import Rect
 from .base import CaptureBackend
-from .window import resolve_region
+from .window import WindowMinimized, resolve_region
 
 
 class MssCapture(CaptureBackend):
@@ -34,18 +34,31 @@ class MssCapture(CaptureBackend):
         self._region = resolve_region(window_title, capture_region)
         self._refresh_every = max(1, refresh_region_every)
         self._tick = 0
+        self._unavailable: Optional[str] = None
 
     def region(self) -> Rect:
         return self._region
 
+    def unavailable(self) -> Optional[str]:
+        """目前抓不到畫面的原因；正常時回 None。
+
+        最小化是可復原的，所以不丟例外中斷錄製，改成讓呼叫端跳過這一幀。
+        """
+        return self._unavailable
+
     def _maybe_refresh_region(self) -> None:
-        """視窗可能被移動，定期重新定位一次。"""
+        """視窗可能被移動或最小化，定期重新定位一次。"""
         self._tick += 1
-        if self._window_title and self._tick % self._refresh_every == 0:
-            try:
-                self._region = resolve_region(self._window_title, self._fallback)
-            except RuntimeError:
-                pass  # 視窗暫時消失就沿用舊座標
+        if not self._window_title or self._tick % self._refresh_every:
+            return
+        try:
+            self._region = resolve_region(self._window_title, self._fallback)
+            self._unavailable = None
+        except WindowMinimized as exc:
+            self._unavailable = str(exc)
+        except RuntimeError as exc:
+            # 視窗暫時找不到就沿用舊座標，但要記下來讓呼叫端知道畫面不可信
+            self._unavailable = str(exc)
 
     def grab(self) -> np.ndarray:
         self._maybe_refresh_region()

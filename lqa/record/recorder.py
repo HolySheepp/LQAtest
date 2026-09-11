@@ -69,6 +69,7 @@ class Recorder:
         )
         self._tracker = StabilityTracker(profile.stability, profile.mask.min_text_pixels)
         self._seq = 0
+        self._last_warning: Optional[str] = None
 
     def _read(self, image: np.ndarray, mask: np.ndarray, cfg: MaskConfig) -> OcrResult:
         return self._engine.read(_ocr_input(image, mask, cfg, self.profile.ocr.source))
@@ -132,6 +133,21 @@ class Recorder:
 
                 loop_start = time.perf_counter()
                 frame = self._capture.grab()
+
+                # 視窗被最小化時抓到的是垃圾畫面。跳過而不是中斷錄製，
+                # 使用者還原視窗後就能接著錄，前面錄到的也不會遺失。
+                reason = self._capture.unavailable()
+                if reason:
+                    if reason != self._last_warning:
+                        self._last_warning = reason
+                        print(f"[暫停] {reason}")
+                    self._tracker.reset()
+                    time.sleep(interval)
+                    continue
+                if self._last_warning:
+                    self._last_warning = None
+                    print("[繼續] 已重新抓到畫面")
+
                 body_img = tm.crop(frame, p.body_roi)
                 mask = tm.build_mask(body_img, p.mask)
 
