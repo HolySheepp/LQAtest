@@ -77,9 +77,23 @@ class MssCapture(CaptureBackend):
 def open_capture(
     window_title: Optional[str],
     capture_region: Optional[Rect],
-    backend: str = "mss",
+    backend: str = "auto",
 ) -> CaptureBackend:
-    """建立擷取後端。目前只實作 mss，之後新增後端從這裡分流。"""
-    if backend == "mss":
+    """建立擷取後端。
+
+    auto（預設）優先用 PrintWindow，因為它是向視窗要畫面，
+    被其他視窗蓋住也抓得到；實際抓一張確認不是黑畫面才採用，
+    不行就退回 mss 抓螢幕區域。
+
+    沒有指定視窗標題（只給絕對座標）時只能用 mss。
+    """
+    if backend in ("auto", "printwindow") and window_title:
+        from .gdi_backend import PrintWindowCapture, can_use_print_window
+
+        if backend == "printwindow" or can_use_print_window(window_title):
+            return PrintWindowCapture(window_title)
+        if backend == "printwindow":  # pragma: no cover - 上面已 return
+            raise RuntimeError("PrintWindow 後端無法使用")
+    if backend in ("auto", "mss"):
         return MssCapture(window_title, capture_region)
     raise ValueError(f"未知的擷取後端：{backend}")

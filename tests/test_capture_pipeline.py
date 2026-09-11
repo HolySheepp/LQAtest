@@ -183,7 +183,10 @@ class TestOcrInputImages:
         frame, mask, cfg, ocr_input = self._inputs(upscale=1)
         out = ocr_input(frame, mask, cfg, "masked_gray")
         # 遮罩會先膨脹一圈把抗鋸齒邊緣納進來，所以「背景」要看膨脹範圍之外
-        far_background = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2) == 0
+        grow = MaskConfig().ocr_grow
+        far_background = cv2.dilate(
+            mask, np.ones((3, 3), np.uint8), iterations=grow + 1
+        ) == 0
         assert out[far_background].min() == 255, "離文字夠遠的地方應該全白"
         assert out[mask > 0].mean() < 80, "文字應該是深色"
 

@@ -42,6 +42,10 @@ class MaskConfig:
                                 # 小字不要開，中值濾波會吃掉細筆畫
     bright_threshold: int = 170  # bright 與 value 共用的門檻
     color_tolerance: int = 60   # colorkey 的容許色距（BGR 歐氏距離）
+    # 送 OCR 前把遮罩往外膨脹幾圈，用來補回門檻砍掉的筆畫本體。
+    # 變動偵測要乾淨的遮罩（門檻高），OCR 要完整的筆畫（門檻低），
+    # 兩者需求相反，所以用高門檻取遮罩再靠膨脹補回來。
+    ocr_grow: int = 3
     text_colors: list[str] = field(
         default_factory=lambda: ["#fefefe"]
     )                           # colorkey 用的顏色清單
@@ -82,6 +86,10 @@ class Profile:
     # 擷取來源：優先用視窗標題找雷電視窗，找不到才退回絕對螢幕座標
     window_title: Optional[str] = "雷電模擬器"
     capture_region: Optional[Rect] = None
+    # auto | printwindow | mss
+    # auto 會優先用 PrintWindow（向視窗要畫面，被蓋住也抓得到），
+    # 實測抓不到內容才退回 mss（抓螢幕區域，會被遮擋影響）
+    capture_backend: str = "auto"
     # ROI 一律相對於擷取來源的左上角
     body_roi: Optional[Rect] = None
     speaker_roi: Optional[Rect] = None
@@ -115,6 +123,7 @@ class Profile:
             name=data.get("name", "default"),
             window_title=data.get("window_title"),
             capture_region=rect(data.get("capture_region")),
+            capture_backend=data.get("capture_backend", "auto"),
             body_roi=rect(data.get("body_roi")),
             speaker_roi=rect(data.get("speaker_roi")),
             mask=mask,

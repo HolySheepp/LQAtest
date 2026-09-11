@@ -44,12 +44,14 @@ class TestClippingDetected:
         assert "框正在切掉文字" in out
         assert "右" in out
 
-    def test_warns_when_text_continues_below(self, capsys):
-        frame = np.full((300, 600, 3), 20, np.uint8)
-        for i, y in enumerate((60, 100, 140)):
-            cv2.putText(frame, f"line number {i}", (40, y),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.8, (254, 254, 254), 2, cv2.LINE_AA)
-        roi = (30, 30, 400, 55)      # 只框得到第一行
+    def test_warns_when_a_line_is_cut_horizontally(self, capsys):
+        """框的下緣切在字的中間，上下兩半緊鄰。"""
+        frame = frame_with_text("Cut through", x=40, y=80, scale=1.4)
+        mask_full = tm.build_mask(frame, CFG)
+        box = tm.content_bbox(mask_full)
+        assert box is not None
+        x0, y0, x1, y1 = box
+        roi = (x0 - 10, y0 - 10, x1 - x0 + 20, (y1 - y0) // 2)
         out = run(frame, roi, capsys)
         assert "框正在切掉文字" in out
         assert "下" in out
@@ -69,6 +71,22 @@ class TestNoClipping:
         for side in ("上", "下", "左", "右"):
             assert side in out
 
+    def test_adjacent_text_block_is_not_clipping(self, capsys):
+        """回歸測試。
+
+        姓名框正下方就是對白、對白框正上方就是姓名，兩者都是獨立的文字塊。
+        只看「框外有沒有文字」會把這些全部誤報成切字，
+        所以還要求框外的文字必須緊鄰框線（幾乎沒有間隙）。
+        """
+        frame = np.full((300, 600, 3), 20, np.uint8)
+        cv2.putText(frame, "Speaker", (40, 60), cv2.FONT_HERSHEY_DUPLEX,
+                    0.8, (254, 254, 254), 2, cv2.LINE_AA)
+        cv2.putText(frame, "The dialogue line", (40, 130), cv2.FONT_HERSHEY_DUPLEX,
+                    0.8, (254, 254, 254), 2, cv2.LINE_AA)
+        # 緊貼姓名文字的框：下方 70px 處才是對白，不算切字
+        out = run(frame, (35, 42, 200, 24), capsys)
+        assert "框正在切掉文字" not in out
+
     def test_hints_when_margin_is_razor_thin(self, capsys):
         """框外沒有文字，但字幾乎貼著框線時仍要提醒留餘裕。"""
         frame = frame_with_text("Snug", x=10, y=40, scale=0.8)
@@ -78,7 +96,7 @@ class TestNoClipping:
         x0, y0, x1, y1 = box
         roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)   # 剛好貼齊文字
         out = run(frame, roi, capsys)
-        assert "建議仍留 10px 以上餘裕" in out
+        assert "10px 以上餘裕" in out
 
     def test_empty_roi_does_not_crash(self, capsys):
         frame = np.full((200, 200, 3), 20, np.uint8)

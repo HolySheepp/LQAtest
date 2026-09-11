@@ -46,7 +46,7 @@ def _ocr_input(image: np.ndarray, mask: np.ndarray, cfg: MaskConfig, source: str
         # OCR 模型習慣「白底黑字」，遮罩是白字黑底，要反相
         base = 255 - mask
     else:
-        base = tm.masked_value(image, mask)
+        base = tm.masked_value(image, mask, grow=cfg.ocr_grow)
     return tm.upscale_for_ocr(base, cfg.upscale)
 
 
@@ -65,7 +65,7 @@ class Recorder:
         self.on_line = on_line
         self._engine = engine or build_engine(profile.ocr.engine, profile.ocr.lang)
         self._capture = capture or open_capture(
-            profile.window_title, profile.capture_region
+            profile.window_title, profile.capture_region, profile.capture_backend
         )
         self._tracker = StabilityTracker(profile.stability, profile.mask.min_text_pixels)
         self._seq = 0

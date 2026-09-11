@@ -82,39 +82,58 @@ def _report_fit(
     outside = outer.copy()
     outside[oy:oy + h, ox:ox + w] = 0
 
+    box = tm.content_bbox(mask)
+    if box is None:
+        return
+    x0, y0, x1, y1 = box
+    margins = {"上": y0, "下": h - 1 - y1, "左": x0, "右": w - 1 - x1}
+    print("  框內留白     " + "  ".join(f"{s} {g}" for s, g in margins.items()) + " px")
+
+    # 只取 ROI 正上/正下/正左/正右的帶狀區域，避免把斜對角的其他 UI 算進來
     bands = {
         "上": outside[:oy, ox:ox + w],
         "下": outside[oy + h:, ox:ox + w],
-        "左": outside[:, :ox],
-        "右": outside[:, ox + w:],
+        "左": outside[oy:oy + h, :ox],
+        "右": outside[oy:oy + h, ox + w:],
     }
-    touch_bottom, touch_right = tm.touches_edges(mask, 3)
-    touching = {"下": touch_bottom, "右": touch_right}
 
-    # 框內文字距離各邊還有多少空隙
-    box = tm.content_bbox(mask)
-    if box is not None:
-        x0, y0, x1, y1 = box
-        print(f"  框內留白     上 {y0}  下 {h - 1 - y1}  左 {x0}  右 {w - 1 - x1} px")
+    def gap_to_edge(side: str, band: np.ndarray) -> Optional[int]:
+        """框線到框外最近一個文字像素的距離。沒有文字回 None。"""
+        if band.size == 0:
+            return None
+        if side in ("上", "下"):
+            rows = np.flatnonzero(band.any(axis=1))
+            if rows.size == 0:
+                return None
+            return int(band.shape[0] - 1 - rows.max()) if side == "上" else int(rows.min())
+        cols = np.flatnonzero(band.any(axis=0))
+        if cols.size == 0:
+            return None
+        return int(band.shape[1] - 1 - cols.max()) if side == "左" else int(cols.min())
 
+    # 判定「框把字切掉」需要兩個條件同時成立：
+    #   1. 框內的文字已經頂到那一邊
+    #   2. 框外緊鄰（幾乎沒有間隙）就還有文字
+    # 少了第二個條件，相鄰的其他 UI（姓名框下方的對白、對白框上方的姓名）
+    # 都會被誤報成切字。
     clipped: list[str] = []
     for side, band in bands.items():
-        pixels = int(np.count_nonzero(band))
-        if pixels < max(8, cfg.min_text_pixels // 4):
+        if margins[side] > 3:
             continue
-        if touching.get(side, True):
-            clipped.append(f"{side}({pixels}px)")
+        gap = gap_to_edge(side, band)
+        if gap is None or gap > 2:
+            continue
+        clipped.append(f"{side}(外側 {int(np.count_nonzero(band))}px 文字緊鄰)")
 
     if clipped:
-        print(f"  [警告] {label}的框外緊鄰還有文字：{'、'.join(clipped)}。"
-              "框正在切掉文字，請重新校準把框放大")
-    elif box is not None:
-        x0, y0, x1, y1 = box
-        tight = [s for s, gap in (("上", y0), ("下", h - 1 - y1),
-                                  ("左", x0), ("右", w - 1 - x1)) if gap <= 3]
-        if tight:
-            print(f"  [提示] 文字離 {'、'.join(tight)} 邊只剩不到 3px，"
-                  "框外雖然沒偵測到文字，建議仍留 10px 以上餘裕")
+        print(f"  [警告] {label}的框正在切掉文字：{'、'.join(clipped)}。"
+              "請重新校準把框放大")
+        return
+
+    tight = [s for s, gap in margins.items() if gap <= 3]
+    if tight:
+        print(f"  [提示] 文字離 {'、'.join(tight)} 邊只剩不到 3px，"
+              "框外雖然沒有緊鄰的文字，仍建議留 10px 以上餘裕")
 
 
 def _describe(
@@ -256,7 +275,14 @@ def run_probe(
             raise FileNotFoundError(f"讀不到圖檔：{image}")
         inspect(frame, 1, str(image))
     else:
-        capture = open_capture(profile.window_title, profile.capture_region)
+        capture = open_capture(
+            profile.window_title, profile.capture_region, profile.capture_backend
+        )
+        kind = type(capture).__name__
+        occlusion = ("被其他視窗蓋住也抓得到" if kind == "PrintWindowCapture"
+                     else "抓的是螢幕區域，模擬器被蓋住會抓到遮擋內容")
+        print(f"擷取後端：{kind}（{occlusion}）")
+        print("")
         try:
             for index in range(1, samples + 1):
                 if index > 1:
