@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# 實際的設定與產出，不進版控
+config/profile.json
+config/speakers.csv
+sessions/
+reports/
+scripts/
+
+# 翻譯文本本體不進版控（內含未公開遊戲文本）
+*.xlsx
+*.xlsm
+*.csv
+*.tsv
+!config/*.example.csv
+
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,11 @@
+# 核心相依：比對階段（離線）只需要這些
+numpy>=2.0
+rapidfuzz>=3.9
+openpyxl>=3.1
+
+# 錄製階段額外需要
+mss>=9.0
+opencv-python-headless>=4.10
+
+# 開發
+pytest>=8.0

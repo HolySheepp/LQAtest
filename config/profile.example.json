@@ -1,0 +1,33 @@
+{
+  "name": "ldplayer",
+  "window_title": "雷電模擬器",
+  "capture_region": null,
+  "body_roi": [320, 640, 960, 150],
+  "speaker_roi": [320, 596, 260, 40],
+  "mask": {
+    "method": "otsu",
+    "invert": false,
+    "upscale": 2,
+    "clahe": true,
+    "blur": 3,
+    "bright_threshold": 170,
+    "min_text_pixels": 40
+  },
+  "speaker_mask": null,
+  "stability": {
+    "poll_interval_ms": 80,
+    "diff_threshold": 0.01,
+    "stable_frames": 4,
+    "min_gap_ms": 200,
+    "rearm_threshold": 0.01
+  },
+  "ocr": {
+    "engine": "rapidocr",
+    "lang": "en",
+    "min_confidence": 0.45,
+    "join_with": " ",
+    "edge_margin_px": 3,
+    "source": "mask",
+    "screenshot_quality": 85
+  }
+}

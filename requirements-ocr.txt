@@ -1,0 +1,7 @@
+# OCR 引擎單獨列出：檔案大、下載久，只有要錄製時才需要。
+# 先試 rapidocr（v2）；若你的環境裝不起來，改用下面註解掉的 v1 套件。
+rapidocr>=2.0
+onnxruntime>=1.17
+
+# 舊版替代方案（與 rapidocr 二選一）
+# rapidocr-onnxruntime>=1.3
