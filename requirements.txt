@@ -3,9 +3,11 @@ numpy>=2.0
 rapidfuzz>=3.9
 openpyxl>=3.1
 
-# 錄製階段額外需要
+# 錄製與校準階段額外需要
+# 注意：必須用完整版 opencv-python，不能用 headless。
+# headless 版沒有 GUI，calibrate 的框選視窗與遮罩預覽會無法開啟。
 mss>=9.0
-opencv-python-headless>=4.10
+opencv-python>=4.10
 
 # 開發
 pytest>=8.0

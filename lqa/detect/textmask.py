@@ -18,7 +18,7 @@ def _require_cv2():
         import cv2  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
-            "錄製功能需要 opencv：pip install opencv-python-headless"
+            "錄製功能需要 opencv：pip install opencv-python"
         ) from exc
     return cv2
 
@@ -83,12 +83,33 @@ def upscale_for_ocr(image: np.ndarray, factor: int) -> np.ndarray:
 
 
 def mask_diff_ratio(a: np.ndarray | None, b: np.ndarray | None) -> float:
-    """兩張遮罩的差異比例（0.0 ~ 1.0）。"""
+    """以 ROI 面積正規化的差異比例。僅供診斷用。
+
+    不要拿這個做變動偵測：文字只佔 ROI 面積的 1% 出頭，
+    打完一整個字也才動到約 0.06% 的面積，訊號會被面積稀釋掉。
+    """
     if a is None or b is None:
         return 1.0
     if a.shape != b.shape:
         return 1.0
     return float(np.count_nonzero(a != b)) / float(a.size or 1)
+
+
+def mask_change_ratio(
+    a: np.ndarray | None, b: np.ndarray | None, floor: int = 1
+) -> float:
+    """以**文字像素量**正規化的差異比例，這才是變動偵測該用的。
+
+    分母取兩張遮罩中前景像素較多者，所以門檻與 ROI 大小、
+    解析度、對白框尺寸都無關，換機器不必重調。
+    """
+    if a is None or b is None:
+        return 1.0
+    if a.shape != b.shape:
+        return 1.0
+    changed = np.count_nonzero(a != b)
+    denom = max(np.count_nonzero(a), np.count_nonzero(b), floor)
+    return float(changed) / float(denom)
 
 
 def text_pixel_count(mask: np.ndarray) -> int:

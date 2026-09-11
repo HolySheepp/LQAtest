@@ -32,7 +32,8 @@ def _require_cv2():
         import cv2  # noqa: PLC0415
     except ImportError as exc:
         raise ImportError(
-            "校準工具需要 opencv：pip install opencv-python-headless"
+            "校準工具需要 opencv 完整版（headless 版沒有 GUI）："
+            "pip install opencv-python"
         ) from exc
     return cv2
 

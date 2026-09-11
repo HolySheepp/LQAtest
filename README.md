@@ -19,14 +19,39 @@
 
 ## 安裝
 
+在**專案資料夾**裡執行（就是這個 README 所在的資料夾）：
+
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r requirements-ocr.txt
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+.venv/Scripts/python.exe -m pip install -r requirements-ocr.txt
 ```
 
+直接指定 `.venv/Scripts/python.exe` 就不必先 activate，PowerShell 與 Git Bash 都通。
+
 只要跑比對（例如重新分析已錄好的 session）的話，裝 `requirements.txt` 就夠了。
+OCR 那包約 100MB，首次執行時還會再下載一次模型檔。
+
+注意 opencv 必須裝**完整版** `opencv-python`，不能裝 `opencv-python-headless`。
+headless 版沒有 GUI，`calibrate` 的框選視窗與遮罩預覽會開不起來。
+
+## 檔案放哪
+
+```
+LQA/
+  config/
+    profile.json      calibrate 產生，不要手動編（可手動微調門檻）
+    speakers.csv      發話者中英對照表，自己建，格式見 speakers.example.csv
+  scripts/
+    你的翻譯文本.xlsx   從 Google 試算表下載成 xlsx 放這裡
+  sessions/           錄製結果，程式自動建立
+  reports/            比對報告，程式自動建立
+```
+
+`config/profile.json`、`config/speakers.csv`、`scripts/`、`sessions/`、`reports/`
+以及所有 `.xlsx` / `.csv` 都已經在 `.gitignore` 裡，**遊戲文本不會被推上 GitHub**。
+
+路徑其實可以放任何地方，上面只是建議；實際位置在指令用 `--script` 等參數指定即可。
 
 ## 使用流程
 
@@ -151,6 +176,23 @@ python -m lqa check-script --script 你的文本.xlsx --speakers config/speakers
 - `mss` 後端是抓螢幕區域，模擬器視窗被其他視窗遮住時會抓到遮擋內容。
   若需要背景擷取或抓到黑畫面，需改接 Windows Graphics Capture 後端。
 - 目前只針對英文調校。要加日韓需要換 OCR 語言模型，並調整正規化規則。
+
+## 變動偵測的門檻怎麼定的
+
+`stability.diff_threshold` 與 `rearm_threshold` 是「變動像素 / 文字像素量」的比例，
+**不是佔 ROI 面積的比例**。在合成畫面（半透明框加會動的背景）上實測：
+
+| 情況 | 佔 ROI 面積 | 佔文字像素量 |
+| --- | --- | --- |
+| 背景移動、文字不動 | 0.0001 ~ 0.0003 | 0.007 ~ 0.018 |
+| 打字中的視窗累積量 | 約 0.004 | 約 0.13 |
+
+文字只佔 ROI 面積 1% 出頭，用面積當分母會把訊號稀釋到跟背景雜訊同一個數量級，
+所以改用文字量當分母，預設門檻 0.04 落在兩者中間，且不隨解析度或對白框大小改變。
+
+另外偵測是比對「現在」與「stable_frames 幀之前」，不是只比前一幀 ——
+打字打到空格時單幀變動量是 0，只比前一幀會誤判成已經穩定而錄到半句話。
+`tests/test_capture_pipeline.py` 有這兩點的回歸測試。
 
 ## 專案結構
 

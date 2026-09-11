@@ -33,13 +33,17 @@ class MaskConfig:
 
 @dataclass
 class StabilityConfig:
-    """打字機效果處理：等文字不再變動才擷取。"""
+    """打字機效果處理：等文字不再變動才擷取。
+
+    兩個門檻都是「變動像素 / 文字像素量」的比例，不是佔 ROI 面積的比例，
+    所以換解析度或改對白框大小都不需要重調。理由見 detect/stability.py。
+    """
 
     poll_interval_ms: int = 80
-    diff_threshold: float = 0.010   # 遮罩差異比例，超過視為畫面在變
-    stable_frames: int = 4          # 連續幾幀沒變才算穩定
+    diff_threshold: float = 0.04    # 視窗內（現在 vs stable_frames 幀前）的容許變動量
+    stable_frames: int = 4          # 視窗長度：連續幾幀都沒變才算穩定
     min_gap_ms: int = 200           # 兩次擷取之間的最小間隔
-    rearm_threshold: float = 0.010  # 要再次觸發前必須先觀察到的變動量
+    rearm_threshold: float = 0.04   # 單幀變動量超過此值才重新進入「等待穩定」狀態
 
 
 @dataclass

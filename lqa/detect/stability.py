@@ -1,22 +1,35 @@
 """穩定幀偵測。
 
-遊戲有逐字打字機效果，直接看到變動就 OCR 會抓到半句話。
-所以要等「文字遮罩連續 N 幀不再變動」才擷取一次。
+遊戲有逐字打字機效果，看到變動就 OCR 會抓到半句話，
+所以要等「文字不再變動」才擷取一次。
 
-流程：
-    畫面變了 -> dirty = True -> 連續 N 幀沒變 -> 觸發一次擷取 -> dirty = False
-    要等到下一次真正的變動才會再觸發，避免同一句重複記錄。
+這裡有兩個不直覺但必要的設計，都是實測數據逼出來的：
+
+1. **比對整個視窗，不是只比前一幀。**
+   打字打到空格時，那一幀的變動量是 0，只比前一幀會誤判成已經穩定。
+   改成比對「現在」與「N 幀之前」，中間累積的字就藏不住了。
+
+2. **差異用文字像素量正規化，不是用 ROI 面積。**
+   文字只佔 ROI 面積約 1%，打完一整個字也才動到約 0.06% 的面積，
+   用面積當分母的話訊號會被稀釋到跟背景雜訊同一個數量級。
+   改用文字量當分母之後，門檻也不再隨解析度或對白框大小而改變。
+
+實測分離度（合成畫面，半透明框加會動的背景）：
+    背景移動、文字不動   約 0.007 ~ 0.018
+    打字中的視窗累積量   約 0.13
+預設門檻 0.04 落在中間，兩邊都有數倍餘裕。
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 
 from ..config import StabilityConfig
-from .textmask import mask_diff_ratio, text_pixel_count
+from .textmask import mask_change_ratio, text_pixel_count
 
 
 @dataclass
@@ -26,55 +39,61 @@ class StableEvent:
     mask: np.ndarray
     stable_ms: int
     text_pixels: int
-    diff_since_last: float
+    window_diff: float
 
 
 class StabilityTracker:
     def __init__(self, cfg: StabilityConfig, min_text_pixels: int):
         self.cfg = cfg
         self.min_text_pixels = min_text_pixels
+        self._window: deque[np.ndarray] = deque(maxlen=cfg.stable_frames + 1)
         self._prev: Optional[np.ndarray] = None
         self._last_emitted: Optional[np.ndarray] = None
-        self._stable_frames = 0
         self._dirty = False
         self._last_change_ms = 0.0
         self._last_emit_ms = -1e9
 
     def reset(self) -> None:
+        self._window.clear()
         self._prev = None
         self._last_emitted = None
-        self._stable_frames = 0
         self._dirty = False
+
+    def _ratio(self, a: Optional[np.ndarray], b: Optional[np.ndarray]) -> float:
+        return mask_change_ratio(a, b, self.min_text_pixels)
 
     def feed(self, mask: np.ndarray, now_ms: float) -> Optional[StableEvent]:
         """餵一張遮罩。回傳非 None 代表這一刻可以擷取。"""
-        diff = mask_diff_ratio(self._prev, mask)
+        frame_diff = self._ratio(self._prev, mask)
         self._prev = mask
+        self._window.append(mask)
 
-        if diff > self.cfg.diff_threshold:
-            self._stable_frames = 0
+        if frame_diff > self.cfg.rearm_threshold:
+            self._dirty = True
             self._last_change_ms = now_ms
-            if diff > self.cfg.rearm_threshold:
-                self._dirty = True
-            return None
 
-        self._stable_frames += 1
         if not self._dirty:
             return None
-        if self._stable_frames < self.cfg.stable_frames:
+        # 視窗還沒填滿，無從判斷是否已經穩定
+        if len(self._window) <= self.cfg.stable_frames:
+            return None
+
+        window_diff = self._ratio(self._window[0], mask)
+        if window_diff > self.cfg.diff_threshold:
             return None
         if now_ms - self._last_emit_ms < self.cfg.min_gap_ms:
             return None
 
         pixels = text_pixel_count(mask)
         if pixels < self.min_text_pixels:
-            # 空畫面（過場、黑幕）：清掉 dirty，等下次真的出現文字
+            # 空畫面（過場、黑幕）：清掉狀態，等下次真的出現文字。
+            # last_emitted 一併清掉，這樣空白之後重複出現的同一句仍會被記錄。
             self._dirty = False
             self._last_emitted = None
             return None
 
         # 和上次擷取的內容一樣就不重複記錄（例如點擊沒推進）
-        if mask_diff_ratio(self._last_emitted, mask) <= self.cfg.diff_threshold:
+        if self._ratio(self._last_emitted, mask) <= self.cfg.diff_threshold:
             self._dirty = False
             return None
 
@@ -85,5 +104,5 @@ class StabilityTracker:
             mask=mask,
             stable_ms=int(now_ms - self._last_change_ms),
             text_pixels=pixels,
-            diff_since_last=diff,
+            window_diff=window_diff,
         )

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -21,6 +22,8 @@ class RapidOcrEngine(OcrEngine):
 
     @staticmethod
     def _create() -> Any:
+        # RapidOCR 啟動時會印一堆模型載入 INFO，錄製時會蓋掉句子列表
+        logging.getLogger("RapidOCR").setLevel(logging.WARNING)
         try:
             from rapidocr import RapidOCR  # noqa: PLC0415
 
@@ -55,11 +58,14 @@ class RapidOcrEngine(OcrEngine):
         """吃下 RapidOCR v1 與 v2 兩種回傳格式。"""
         lines: list[OcrLine] = []
 
-        # v2：具名物件，帶 txts / scores / boxes
-        txts = getattr(raw, "txts", None)
-        if txts is not None:
-            scores = getattr(raw, "scores", None) or []
-            boxes = getattr(raw, "boxes", None) or []
+        # v2 / v3：具名結果物件，帶 txts / scores / boxes
+        # 注意要用 hasattr 判斷，沒辨識到任何文字時 txts 會是 None 而不是空序列
+        if hasattr(raw, "txts"):
+            txts = getattr(raw, "txts", None) or []
+            scores = getattr(raw, "scores", None)
+            scores = [] if scores is None else list(scores)
+            boxes = getattr(raw, "boxes", None)
+            boxes = [] if boxes is None else list(boxes)
             for idx, text in enumerate(txts):
                 conf = float(scores[idx]) if idx < len(scores) else 0.0
                 box = self._box_bounds(boxes[idx]) if idx < len(boxes) else None

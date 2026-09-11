@@ -16,10 +16,10 @@
   "speaker_mask": null,
   "stability": {
     "poll_interval_ms": 80,
-    "diff_threshold": 0.01,
+    "diff_threshold": 0.04,
     "stable_frames": 4,
     "min_gap_ms": 200,
-    "rearm_threshold": 0.01
+    "rearm_threshold": 0.04
   },
   "ocr": {
     "engine": "rapidocr",
