@@ -120,13 +120,33 @@ def build_mask(image: np.ndarray, cfg: MaskConfig) -> np.ndarray:
     return mask
 
 
+def masked_value(image: np.ndarray, mask: np.ndarray, grow: int = 1) -> np.ndarray:
+    """用遮罩把背景挖掉，但**保留文字本身的灰階層次**。
+
+    純二值遮罩送進 OCR 會把抗鋸齒邊緣一起砍掉，小字很容易糊成一團
+    （實測把 failed 讀成 falled）。這裡改成：遮罩範圍內保留原始亮度、
+    範圍外一律填白，等於「乾淨背景 + 原本的筆畫」。
+
+    grow 會把遮罩稍微膨脹，把門檻邊緣那圈半亮的抗鋸齒像素一起納進來，
+    這正是讓字看起來銳利的部分。
+    """
+    cv2 = _require_cv2()
+    region = mask
+    if grow > 0:
+        region = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=grow)
+    value = value_channel(image)
+    # 文字是亮的，OCR 習慣白底黑字，所以反過來
+    return np.where(region > 0, 255 - value, 255).astype(np.uint8)
+
+
 def upscale_for_ocr(image: np.ndarray, factor: int) -> np.ndarray:
     """OCR 前放大。小字放大 2~3 倍對辨識率影響很大。"""
     if factor <= 1:
         return image
     cv2 = _require_cv2()
+    # 等比例放大。fx 與 fy 一定要相同，否則字會被拉長變形。
     return cv2.resize(
-        image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC
+        image, None, fx=factor, fy=factor, interpolation=cv2.INTER_LANCZOS4
     )
 
 

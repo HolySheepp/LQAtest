@@ -21,6 +21,9 @@ from .config import MaskConfig, Profile, Rect
 # 遮罩覆蓋率高於此值，多半是 ROI 框到背景或門檻太鬆
 _COVERAGE_WARN = 0.15
 
+# --sources 會逐一試這些，挑辨識最準的
+OCR_SOURCES = ("masked_gray", "mask", "gray", "color")
+
 
 def _require_cv2():
     try:
@@ -40,6 +43,7 @@ def _describe(
     out_dir: Path,
     index: int,
     ocr_source: str,
+    compare_sources: bool = False,
 ) -> None:
     from .detect import textmask as tm
     from .record.recorder import _ocr_input
@@ -64,6 +68,14 @@ def _describe(
     print(f"  取字方式     {cfg.method}"
           + (f"  容許色距={cfg.color_tolerance}" if cfg.method == "colorkey"
              else f"  門檻={cfg.bright_threshold}"))
+
+    # 亮度分布：用來客觀挑門檻，不必靠猜
+    value = tm.value_channel(crop)
+    p50, p90, p99 = (int(np.percentile(value, q)) for q in (50, 90, 99))
+    print(f"  亮度分布     中位數={p50}  90%={p90}  99%={p99}  最大={int(value.max())}")
+    if int(value.max()) < 200:
+        print(f"  [注意] 整塊最亮才 {int(value.max())}，文字不是預期的 #fefefe(254)。"
+              "可能是擷取時被套了濾鏡/調光，或 ROI 沒框到文字")
     print(f"  文字像素     {pixels}  覆蓋率 {coverage:.2%}")
 
     if pixels < cfg.min_text_pixels:
@@ -82,15 +94,36 @@ def _describe(
     cv2.imwrite(str(out_dir / f"{stem}_原圖.png"), crop)
     cv2.imwrite(str(out_dir / f"{stem}_遮罩.png"), mask)
 
+    # 存下真正送進 OCR 的那張圖。OCR 讀不好時，答案幾乎都在這張圖上，
+    # 看原圖和遮罩是看不出來的。
+    ocr_image = _ocr_input(crop, mask, cfg, ocr_source)
+    cv2.imwrite(str(out_dir / f"{stem}_送進OCR.png"), ocr_image)
+    print(f"  送進 OCR     {ocr_source}  放大 {cfg.upscale} 倍  "
+          f"-> {ocr_image.shape[1]} x {ocr_image.shape[0]}")
+
     if engine is None:
         print("  OCR          未安裝，略過")
     else:
-        result = engine.read(_ocr_input(crop, mask, cfg, ocr_source))
+        result = engine.read(ocr_image)
         print(f"  OCR 讀到     {result.text!r}")
         print(f"  信心值       {result.confidence:.3f}  ({len(result.lines)} 行)")
+        low = [ln for ln in result.lines if ln.confidence < 0.9]
+        for ln in low:
+            print(f"  [低信心] {ln.confidence:.3f}  {ln.text!r}")
         if result.is_empty and pixels >= cfg.min_text_pixels:
             print("  [警告] 遮罩有文字像素但 OCR 讀不出來。"
                   "試試把 mask.upscale 調大，或把 ocr.source 改成 gray")
+
+        if compare_sources:
+            print("")
+            print("  各種取字方式比較（挑辨識最準的填進 profile 的 ocr.source）：")
+            for name in OCR_SOURCES:
+                candidate = _ocr_input(crop, mask, cfg, name)
+                cv2.imwrite(str(out_dir / f"{stem}_送進OCR_{name}.png"), candidate)
+                outcome = engine.read(candidate)
+                marker = " <-- 目前使用" if name == ocr_source else ""
+                print(f"    {name:<12} {outcome.confidence:.3f}  "
+                      f"{outcome.text!r}{marker}")
     print("")
 
 
@@ -100,6 +133,7 @@ def run_probe(
     samples: int = 1,
     interval: float = 1.0,
     image: Optional[Path] = None,
+    compare_sources: bool = False,
 ) -> int:
     """image 有給的話就診斷這張圖，不去抓螢幕。
 
@@ -129,10 +163,10 @@ def run_probe(
               f"{frame.shape[1]} x {frame.shape[0]} ===")
         cv2.imwrite(str(out_dir / f"{index:02d}_全畫面.png"), frame)
         _describe(cv2, "對白框", frame, profile.body_roi, profile.mask,
-                  engine, out_dir, index, profile.ocr.source)
+                  engine, out_dir, index, profile.ocr.source, compare_sources)
         _describe(cv2, "姓名框", frame, profile.speaker_roi,
                   profile.effective_speaker_mask(), engine, out_dir, index,
-                  profile.ocr.source)
+                  profile.ocr.source, compare_sources)
 
     if image is not None:
         frame = cv2.imread(str(image), cv2.IMREAD_COLOR)

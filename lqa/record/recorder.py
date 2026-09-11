@@ -30,16 +30,23 @@ LineCallback = Callable[[CapturedLine], None]
 def _ocr_input(image: np.ndarray, mask: np.ndarray, cfg: MaskConfig, source: str) -> np.ndarray:
     """依設定決定送進 OCR 的影像。
 
-    預設用二值遮罩：對白框背景會隨場景變動，取字之後乾淨很多。
-    若某些字體在二值化後反而破碎，可改成 gray 或 color。
+    預設 masked_gray：用遮罩挖掉背景，但保留文字本身的灰階層次。
+    純二值（mask）會把抗鋸齒邊緣砍掉，小字容易糊掉而誤判。
+
+      masked_gray  乾淨背景 + 原本的筆畫。預設，辨識率最好
+      mask         純二值。背景極髒時才用
+      gray         整塊灰階，完全不遮。字與背景對比夠高時可用
+      color        原圖直送
     """
     if source == "color":
         base = image
     elif source == "gray":
         base = tm.to_gray(image)
-    else:
+    elif source == "mask":
         # OCR 模型習慣「白底黑字」，遮罩是白字黑底，要反相
         base = 255 - mask
+    else:
+        base = tm.masked_value(image, mask)
     return tm.upscale_for_ocr(base, cfg.upscale)
 
 

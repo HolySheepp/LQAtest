@@ -38,7 +38,8 @@ class MaskConfig:
     invert: bool = False        # 深色底淺色字時不用開；淺底深字才開
     upscale: int = 2            # OCR 前放大倍率，小字很吃這個
     clahe: bool = False         # 只對 otsu / adaptive 有意義，會破壞絕對門檻
-    blur: int = 3               # 中值濾波核大小，0 表示不做
+    blur: int = 0               # 中值濾波核大小，0 表示不做。
+                                # 小字不要開，中值濾波會吃掉細筆畫
     bright_threshold: int = 170  # bright 與 value 共用的門檻
     color_tolerance: int = 60   # colorkey 的容許色距（BGR 歐氏距離）
     text_colors: list[str] = field(
@@ -69,7 +70,9 @@ class OcrConfig:
     min_confidence: float = 0.45
     join_with: str = " "        # 多行結果合併方式
     edge_margin_px: int = 3     # 文字 bbox 距離 ROI 邊緣多少像素內算「貼邊」
-    source: str = "mask"        # mask | gray | color，決定送進 OCR 的影像
+    # 決定送進 OCR 的影像：masked_gray | mask | gray | color
+    # masked_gray 保留文字灰階層次，純二值會砍掉抗鋸齒邊緣導致小字誤判
+    source: str = "masked_gray"
     screenshot_quality: int = 85
 
 

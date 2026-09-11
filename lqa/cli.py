@@ -307,6 +307,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         samples=args.samples,
         interval=args.interval,
         image=Path(args.image) if args.image else None,
+        compare_sources=args.sources,
     )
 
 
@@ -494,6 +495,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--interval", type=float, default=1.0, help="每張之間隔幾秒")
     p.add_argument("--image", default=None,
                    help="改為診斷現成截圖，不抓螢幕（尺寸需與校準時一致）")
+    p.add_argument("--sources", action="store_true",
+                   help="逐一比較各種取字方式的辨識結果，用來挑最準的那個")
     p.set_defaults(func=_cmd_probe)
 
     p = sub.add_parser("show-session", help="列出某次錄製抓到的所有句子")

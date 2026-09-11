@@ -154,6 +154,75 @@ class TestColoredTextExtraction:
         assert tm.text_pixel_count(mask) > cfg.min_text_pixels
 
 
+class TestOcrInputImages:
+    """送進 OCR 的影像不能變形，而且要保留筆畫的灰階層次。"""
+
+    SEGMENTS = [("This is the", DIALOGUE_WHITE), ("reward", ACCENT_ORANGE)]
+
+    def _inputs(self, upscale: int = 2):
+        from lqa.record.recorder import _ocr_input
+
+        cfg = MaskConfig(method="value", upscale=upscale)
+        frame = make_dialogue_frame(self.SEGMENTS)
+        mask = tm.build_mask(frame, cfg)
+        return frame, mask, cfg, _ocr_input
+
+    def test_upscale_keeps_aspect_ratio(self):
+        """回歸測試：fx 與 fy 不同會把字拉長變形。"""
+        frame, mask, cfg, ocr_input = self._inputs(upscale=3)
+        out = ocr_input(frame, mask, cfg, "masked_gray")
+        assert out.shape[0] == frame.shape[0] * 3
+        assert out.shape[1] == frame.shape[1] * 3
+
+    def test_upscale_one_is_untouched(self):
+        frame, mask, cfg, ocr_input = self._inputs(upscale=1)
+        out = ocr_input(frame, mask, cfg, "masked_gray")
+        assert out.shape[:2] == frame.shape[:2]
+
+    def test_masked_gray_is_white_background_dark_text(self):
+        frame, mask, cfg, ocr_input = self._inputs(upscale=1)
+        out = ocr_input(frame, mask, cfg, "masked_gray")
+        # 遮罩會先膨脹一圈把抗鋸齒邊緣納進來，所以「背景」要看膨脹範圍之外
+        far_background = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2) == 0
+        assert out[far_background].min() == 255, "離文字夠遠的地方應該全白"
+        assert out[mask > 0].mean() < 80, "文字應該是深色"
+
+    def test_masked_gray_keeps_a_halo_around_the_strokes(self):
+        """膨脹那一圈就是讓字看起來銳利的抗鋸齒邊緣，不能被挖掉。"""
+        frame, mask, cfg, ocr_input = self._inputs(upscale=1)
+        out = ocr_input(frame, mask, cfg, "masked_gray")
+        halo = (cv2.dilate(mask, np.ones((3, 3), np.uint8)) > 0) & (mask == 0)
+        assert halo.any()
+        assert (out[halo] < 255).any(), "遮罩邊緣外圈應該保留部分亮度資訊"
+
+    def test_masked_gray_keeps_intermediate_tones(self):
+        """純二值只有 0 和 255；保留灰階才留得住抗鋸齒邊緣。"""
+        frame, mask, cfg, ocr_input = self._inputs(upscale=1)
+        soft = ocr_input(frame, mask, cfg, "masked_gray")
+        hard = ocr_input(frame, mask, cfg, "mask")
+        assert len(np.unique(hard)) == 2
+        assert len(np.unique(soft)) > 2
+
+    def test_mask_source_is_white_background(self):
+        frame, mask, cfg, ocr_input = self._inputs(upscale=1)
+        out = ocr_input(frame, mask, cfg, "mask")
+        assert out[mask == 0].min() == 255
+        assert out[mask > 0].max() == 0
+
+    def test_colored_word_survives_masked_gray(self):
+        """橘字不能在挖背景的過程中被一起挖掉。"""
+        from lqa.record.recorder import _ocr_input
+
+        cfg = MaskConfig(method="value", upscale=1)
+        with_orange = make_dialogue_frame(self.SEGMENTS)
+        white_only = make_dialogue_frame([self.SEGMENTS[0]])
+        dark_with = (_ocr_input(with_orange, tm.build_mask(with_orange, cfg),
+                                cfg, "masked_gray") < 128).sum()
+        dark_without = (_ocr_input(white_only, tm.build_mask(white_only, cfg),
+                                   cfg, "masked_gray") < 128).sum()
+        assert dark_with > dark_without * 1.1
+
+
 class TestHexToBgr:
     def test_parses_six_digit(self):
         assert tm.hex_to_bgr("#ff8a00") == (0, 138, 255)
