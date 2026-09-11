@@ -17,12 +17,49 @@ from .config import Profile
 from .model import CATEGORY_LABEL_ZH, Category
 
 
-def _cmd_windows(_args: argparse.Namespace) -> int:
-    from .capture.window import ensure_dpi_aware, list_windows
+def _cmd_windows(args: argparse.Namespace) -> int:
+    from .capture.window import list_windows
 
-    ensure_dpi_aware()
-    for hwnd, title in list_windows():
-        print(f"{hwnd:>10}  {title}")
+    windows = list_windows()
+    if args.filter:
+        needle = args.filter.lower()
+        windows = [
+            w for w in windows
+            if needle in w.title.lower() or needle in w.process.lower()
+        ]
+
+    if not windows:
+        print("找不到符合的視窗。")
+        return 0
+
+    print("")
+    print(f"{'尺寸':<12}{'程序':<24}標題")
+    print("-" * 76)
+    for w in windows:
+        size = f"{w.width}x{w.height}" if w.width else "-"
+        mark = ""
+        if w.is_emulator:
+            mark = "   <-- 這個就是模擬器畫面"
+        elif w.is_emulator_manager:
+            mark = "   （多開管理器，不是遊戲畫面）"
+        print(f"{size:<12}{w.process:<24}{w.title}{mark}")
+
+    emulators = [w for w in windows if w.is_emulator]
+    print("")
+    if emulators:
+        target = emulators[0]
+        print(f"偵測到模擬器視窗：「{target.title}」 {target.width}x{target.height}")
+        print("接著執行：")
+        print(f'  lqa calibrate --window "{target.title}"')
+    else:
+        managers = [w for w in windows if w.is_emulator_manager]
+        if managers:
+            print("只看到多開管理器，沒看到模擬器本身。")
+            print("請從管理器啟動一個模擬器實例，等遊戲畫面出現後再跑一次。")
+        else:
+            print("清單裡沒有認得出來的模擬器程序。")
+            print("如果你知道是哪一個視窗，直接用它的標題：")
+            print('  lqa calibrate --window "視窗標題"')
     return 0
 
 
@@ -428,7 +465,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("start", help="檢查目前進度，並指出下一步該做什麼")
     p.set_defaults(func=_cmd_start)
 
-    p = sub.add_parser("windows", help="列出目前所有可見視窗的標題")
+    p = sub.add_parser("windows", help="列出可見視窗，並標出哪個是模擬器")
+    p.add_argument("--filter", default=None, help="只顯示標題或程序名稱含有此字串的視窗")
     p.set_defaults(func=_cmd_windows)
 
     p = sub.add_parser("calibrate", help="框選對白框與姓名框，產生 profile")
