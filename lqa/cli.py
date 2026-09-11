@@ -26,6 +26,34 @@ def _cmd_windows(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _script_colors(script: str | None, sheet: str | None) -> list[str]:
+    """把文本裡用過的 <color=#xxxxxx> 全部掃出來，當作 colorkey 的預設色盤。"""
+    if not script:
+        return ["#fefefe"]
+    from .compare.normalize import extract_colors
+    from .compare.script_loader import load_script
+
+    found: set[str] = {"#fefefe"}
+    for line in load_script(script, sheet=sheet):
+        found |= extract_colors(line.target_en)
+    return sorted(found)
+
+
+def _cmd_colors(args: argparse.Namespace) -> int:
+    import json
+
+    colors = _script_colors(args.script, args.sheet)
+    print(f"文本中用到的文字顏色共 {len(colors)} 種（含預設白色）：")
+    for c in colors:
+        print(f"  {c}")
+    print("")
+    print("若要改用 colorkey 取字，把下面這行填進 profile 的 mask.text_colors：")
+    print(f"  {json.dumps(colors)}")
+    print("")
+    print("提示：預設的 value 取字方式不需要色盤，通常直接用就好。")
+    return 0
+
+
 def _cmd_calibrate(args: argparse.Namespace) -> int:
     from .tools_calibrate import run_calibration
 
@@ -33,6 +61,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
         profile_path=Path(args.profile),
         window_title=args.window,
         region=tuple(args.region) if args.region else None,
+        text_colors=_script_colors(args.script, args.sheet),
     )
 
 
@@ -122,10 +151,19 @@ def _cmd_check_script(args: argparse.Namespace) -> int:
     if unknown:
         print(f"缺少英文名的發話者（{len(unknown)}）：" + "、".join(unknown))
 
+    from .compare.normalize import display_key, extract_colors
+
+    colors: set[str] = set()
+    for ln in lines:
+        colors |= extract_colors(ln.target_en)
+    if colors:
+        print(f"文本用到 {len(colors)} 種變色標記：" + "、".join(sorted(colors)))
+
     print("")
-    print("前 5 句：")
+    print("前 5 句（已剝除標記，這是實際會拿去比對的內容）：")
     for ln in lines[:5]:
-        print(f"  [{ln.dialogue_id}] {ln.speaker_en or ln.speaker_zh or '(旁白)'}: {ln.target_en}")
+        speaker = ln.speaker_en or ln.speaker_zh or "(旁白)"
+        print(f"  [{ln.dialogue_id}] {speaker}: {display_key(ln.target_en)}")
     return 0
 
 
@@ -141,7 +179,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--window", default="雷電模擬器", help="要擷取的視窗標題（部分符合即可）")
     p.add_argument("--region", type=int, nargs=4, metavar=("X", "Y", "W", "H"),
                    help="改用絕對螢幕座標，不用視窗定位")
+    p.add_argument("--script", default=None,
+                   help="順便從翻譯文本掃出用過的文字顏色，當作 colorkey 的預設色盤")
+    p.add_argument("--sheet", default=None, help="xlsx 工作表名稱")
     p.set_defaults(func=_cmd_calibrate)
+
+    p = sub.add_parser("colors", help="掃出翻譯文本用過的所有文字顏色")
+    p.add_argument("--script", required=True)
+    p.add_argument("--sheet", default=None)
+    p.set_defaults(func=_cmd_colors)
 
     p = sub.add_parser("record", help="錄製一段對話")
     p.add_argument("--profile", default="config/profile.json")

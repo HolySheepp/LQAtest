@@ -74,7 +74,8 @@ def _speaker_issue(
         return None
     if not exp.speaker_en:
         return None  # 對照表沒這個名字，交給 unknown_speakers 提醒，不誤報
-    actual = nz.display_key(cap.speaker_text)
+    # 畫面上的發話者後面會接內部流水號（例如 "Cyan(11201)"），要先剝掉
+    actual = nz.strip_speaker_id(cap.speaker_text)
     if not actual:
         return Issue(
             category=Category.SPEAKER,

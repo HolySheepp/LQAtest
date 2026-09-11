@@ -18,16 +18,32 @@ Rect = tuple[int, int, int, int]
 class MaskConfig:
     """文字遮罩抽取設定。
 
-    對白框是半透明、後面背景會動，所以不能直接比對原始像素。
-    先把 ROI 轉成「只剩文字」的二值遮罩，再拿遮罩做變動偵測與 OCR。
+    對白框背景是漸變變暗的，文字則是直接疊在上面的高亮度顏色，
+    所以取字最準的方式是看亮度或直接比對顏色，而不是 Otsu 這種
+    會被背景內容牽著走的自適應方法。
+
+    method 的選擇：
+      value    取 RGB 三通道的最大值（等同 HSV 的 V）再砍門檻。**預設，建議用這個。**
+               白字 #fefefe 的 V 是 254，橘字 #ff8a00 是 255，藍字 #5dbcfe 是 254，
+               一個門檻全收，不必事先知道文本用了哪些顏色。
+      colorkey 只取指定顏色附近的像素。精度最高，但漏掉任何一個變色就會缺字，
+               需要先用 `lqa colors --script` 把文本裡所有顏色掃出來填進 text_colors。
+      bright   灰階亮度門檻。**不建議**：灰階會低估飽和色，
+               #ff8a00 的灰階值只有 157，用 170 門檻會把變色字整段砍掉。
+      otsu / adaptive
+               自適應門檻，背景一複雜就會飄。留著當退路。
     """
 
-    method: str = "otsu"        # otsu | adaptive | bright
+    method: str = "value"       # value | colorkey | bright | otsu | adaptive
     invert: bool = False        # 深色底淺色字時不用開；淺底深字才開
     upscale: int = 2            # OCR 前放大倍率，小字很吃這個
-    clahe: bool = True          # 先做局部對比強化，壓掉半透明背景
+    clahe: bool = False         # 只對 otsu / adaptive 有意義，會破壞絕對門檻
     blur: int = 3               # 中值濾波核大小，0 表示不做
-    bright_threshold: int = 170  # method=bright 時的亮度門檻
+    bright_threshold: int = 170  # bright 與 value 共用的門檻
+    color_tolerance: int = 60   # colorkey 的容許色距（BGR 歐氏距離）
+    text_colors: list[str] = field(
+        default_factory=lambda: ["#fefefe"]
+    )                           # colorkey 用的顏色清單
     min_text_pixels: int = 40   # 遮罩前景像素少於此值視為「畫面沒有文字」
 
 

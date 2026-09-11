@@ -68,6 +68,49 @@ class TestPrefixAndLength:
         assert nz.prefix_score(full, other) < 0.7
 
 
+class TestRichTextColors:
+    def test_color_tag_is_stripped_but_content_kept(self):
+        raw = "<color=#ff8a00>Beast</color> is coming."
+        assert nz.display_key(raw) == "Beast is coming."
+
+    def test_colored_text_compares_equal_to_plain_ocr_result(self):
+        """標記不會顯示在畫面上，所以畫面文字不含標記時必須算相符。"""
+        expected = "This is the <color=#ff8a00>reward</color> for your hard work."
+        on_screen = "This is the reward for your hard work."
+        assert nz.similarity(expected, on_screen) == 1.0
+
+    def test_size_tag_is_stripped_too(self):
+        assert nz.display_key("<size=150%>Congratulations.</size>") == "Congratulations."
+
+    def test_extract_colors_finds_every_value(self):
+        text = "<color=#ff8a00>A</color> and <color=#5DBCFE>B</color>"
+        assert nz.extract_colors(text) == {"#ff8a00", "#5dbcfe"}
+
+    def test_extract_colors_expands_shorthand(self):
+        assert nz.extract_colors("<color=#f80>x</color>") == {"#ff8800"}
+
+    def test_extract_colors_on_plain_text(self):
+        assert nz.extract_colors("No tags here.") == set()
+
+
+class TestSpeakerId:
+    def test_trailing_id_is_removed(self):
+        assert nz.strip_speaker_id("Cyan(11201)") == "Cyan"
+
+    def test_handles_spacing_and_fullwidth_parens(self):
+        assert nz.strip_speaker_id("Cyan (11201)") == "Cyan"
+        assert nz.strip_speaker_id("Cyan（11201）") == "Cyan"
+
+    def test_plain_name_is_untouched(self):
+        assert nz.strip_speaker_id("Nev") == "Nev"
+
+    def test_does_not_eat_legitimate_parenthetical_words(self):
+        assert nz.strip_speaker_id("Cyan (Disguised)") == "Cyan (Disguised)"
+
+    def test_empty_input(self):
+        assert nz.strip_speaker_id("") == ""
+
+
 class TestPlaceholders:
     def test_placeholder_segments_match(self):
         expected = "Hello {playerName}, welcome back."

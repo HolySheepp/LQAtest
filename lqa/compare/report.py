@@ -56,7 +56,7 @@ def _row(issue: Issue) -> list[Any]:
         issue.expected_order or "",
         issue.actual_order or "",
         (exp.speaker_en or exp.speaker_zh) if exp else "",
-        nz.display_key(cap.speaker_text) if cap else "",
+        nz.strip_speaker_id(cap.speaker_text) if cap else "",
         nz.display_key(exp.target_en) if exp else "",
         nz.display_key(cap.body_text) if cap else "",
         round(issue.similarity, 4),

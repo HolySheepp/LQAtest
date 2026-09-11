@@ -1,29 +1,42 @@
 """校準工具：框選 ROI 並即時預覽文字遮罩。
 
-遮罩預覽是這個工具最重要的部分。半透明對白框加上會動的背景，
-二值化參數調不對的話，變動偵測會一直誤觸發，或是根本抓不到文字。
+分成兩個獨立的 ROI，各自調各自的遮罩參數：
+
+  對白框   文字通常是 #fefefe，但 <color=#xxxxxx> 標記會讓部分字變色
+  姓名框   發話者可能是 #fefefe 也可能是 #5dbcfe
+
+兩者顏色不同，所以參數分開存（profile 的 mask 與 speaker_mask）。
+
+遮罩預覽是這個工具最重要的部分。對白框背景是漸變變暗的，
+參數調不對的話，變動偵測會誤觸發，或是變色字被整段濾掉導致 OCR 缺字。
 在這裡調到「畫面只剩文字筆畫、背景乾乾淨淨」再存檔。
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 from .config import MaskConfig, Profile, Rect
 
-_METHODS = ("otsu", "adaptive", "bright")
+# 預覽時的切換順序，value 擺第一個因為那是建議值
+_METHODS = ("value", "colorkey", "otsu", "adaptive", "bright")
 
 _HELP = """
 遮罩預覽操作：
-  1 / 2 / 3   切換二值化方式 (otsu / adaptive / bright)
+  1 ~ 5       切換取字方式 (value / colorkey / otsu / adaptive / bright)
+  [ / ]       調整門檻（value/bright 調亮度門檻，colorkey 調容許色距）
   i           反相（淺底深字時開）
-  c           開關 CLAHE 局部對比強化
-  [ / ]       調整 bright 門檻
+  c           開關 CLAHE（只對 otsu/adaptive 有意義）
   - / =       調整 OCR 放大倍率
-  s           存檔並離開
+  s           存檔並進入下一步
   q / Esc     放棄離開
-目標：畫面上只剩文字筆畫，背景越乾淨越好。
+
+建議用 value（預設）。它取 RGB 三通道最大值，白字與變色字會落在同一個量級，
+不必事先知道文本用了哪些顏色。目標：上半部原圖對照下，下半部只剩文字筆畫。
 """
 
 
@@ -39,7 +52,7 @@ def _require_cv2():
 
 
 def _select_roi(cv2, frame, title: str) -> Optional[Rect]:
-    print(f"請用滑鼠框選：{title}（框好按 Enter 確認，按 c 取消）")
+    print(f"請用滑鼠框選：{title}（框好按 Enter 確認，不需要則直接按 Enter）")
     box = cv2.selectROI(title, frame, showCrosshair=True, fromCenter=False)
     cv2.destroyWindow(title)
     x, y, w, h = (int(v) for v in box)
@@ -48,14 +61,86 @@ def _select_roi(cv2, frame, title: str) -> Optional[Rect]:
     return (x, y, w, h)
 
 
+def _compose_preview(cv2, roi_image: np.ndarray, mask: np.ndarray, info: str) -> np.ndarray:
+    """上半部原圖、下半部遮罩，方便直接對照哪些字被吃掉了。"""
+    mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    divider = np.full((2, roi_image.shape[1], 3), (0, 140, 255), dtype=np.uint8)
+    stacked = np.vstack([roi_image[:, :, :3], divider, mask_bgr])
+    cv2.putText(stacked, info, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                (0, 200, 255), 1, cv2.LINE_AA)
+    return stacked
+
+
+def _tune_mask(
+    cv2,
+    frame: np.ndarray,
+    roi: Rect,
+    window_name: str,
+    initial: MaskConfig,
+) -> Optional[MaskConfig]:
+    """互動調整一組遮罩參數。回傳 None 代表使用者放棄。"""
+    from .detect import textmask as tm
+
+    cfg = replace(initial)
+    roi_image = tm.crop(frame, roi)
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    try:
+        while True:
+            try:
+                mask = tm.build_mask(roi_image, cfg)
+            except ValueError as exc:
+                print(f"  參數無效：{exc}")
+                cfg.method = "value"
+                continue
+
+            knob = (
+                f"tol={cfg.color_tolerance}"
+                if cfg.method == "colorkey"
+                else f"thr={cfg.bright_threshold}"
+            )
+            info = (
+                f"{cfg.method} {knob} invert={cfg.invert} clahe={cfg.clahe} "
+                f"upscale={cfg.upscale} pixels={tm.text_pixel_count(mask)}"
+            )
+            cv2.imshow(window_name, _compose_preview(cv2, roi_image, mask, info))
+
+            key = cv2.waitKey(50) & 0xFF
+            if key in (ord("q"), 27):
+                return None
+            if key == ord("s"):
+                return cfg
+            if ord("1") <= key <= ord("5"):
+                cfg.method = _METHODS[key - ord("1")]
+            elif key == ord("i"):
+                cfg.invert = not cfg.invert
+            elif key == ord("c"):
+                cfg.clahe = not cfg.clahe
+            elif key == ord("["):
+                if cfg.method == "colorkey":
+                    cfg.color_tolerance = max(5, cfg.color_tolerance - 5)
+                else:
+                    cfg.bright_threshold = max(0, cfg.bright_threshold - 5)
+            elif key == ord("]"):
+                if cfg.method == "colorkey":
+                    cfg.color_tolerance = min(255, cfg.color_tolerance + 5)
+                else:
+                    cfg.bright_threshold = min(255, cfg.bright_threshold + 5)
+            elif key == ord("-"):
+                cfg.upscale = max(1, cfg.upscale - 1)
+            elif key == ord("="):
+                cfg.upscale = min(4, cfg.upscale + 1)
+    finally:
+        cv2.destroyWindow(window_name)
+
+
 def run_calibration(
     profile_path: Path,
     window_title: Optional[str] = None,
     region: Optional[Rect] = None,
+    text_colors: Optional[list[str]] = None,
 ) -> int:
     cv2 = _require_cv2()
     from .capture.mss_backend import open_capture
-    from .detect import textmask as tm
 
     capture = open_capture(window_title, region)
     frame = capture.grab()
@@ -69,50 +154,30 @@ def run_calibration(
         return 2
     speaker_roi = _select_roi(cv2, frame, "2. 姓名框（可略過，直接按 Enter）")
 
-    mask_cfg = MaskConfig()
     print(_HELP)
 
-    win = "遮罩預覽"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    saved = False
-    while True:
-        body = tm.crop(frame, body_roi)
-        mask = tm.build_mask(body, mask_cfg)
-        info = (
-            f"{mask_cfg.method} invert={mask_cfg.invert} clahe={mask_cfg.clahe} "
-            f"bright={mask_cfg.bright_threshold} upscale={mask_cfg.upscale} "
-            f"pixels={tm.text_pixel_count(mask)}"
-        )
-        preview = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        cv2.putText(preview, info, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                    (0, 200, 255), 1, cv2.LINE_AA)
-        cv2.imshow(win, preview)
-
-        key = cv2.waitKey(50) & 0xFF
-        if key in (ord("q"), 27):
-            break
-        if key == ord("s"):
-            saved = True
-            break
-        if key in (ord("1"), ord("2"), ord("3")):
-            mask_cfg.method = _METHODS[key - ord("1")]
-        elif key == ord("i"):
-            mask_cfg.invert = not mask_cfg.invert
-        elif key == ord("c"):
-            mask_cfg.clahe = not mask_cfg.clahe
-        elif key == ord("["):
-            mask_cfg.bright_threshold = max(0, mask_cfg.bright_threshold - 5)
-        elif key == ord("]"):
-            mask_cfg.bright_threshold = min(255, mask_cfg.bright_threshold + 5)
-        elif key == ord("-"):
-            mask_cfg.upscale = max(1, mask_cfg.upscale - 1)
-        elif key == ord("="):
-            mask_cfg.upscale = min(4, mask_cfg.upscale + 1)
-
-    cv2.destroyAllWindows()
-    if not saved:
+    body_initial = MaskConfig(text_colors=list(text_colors or ["#fefefe"]))
+    print("--- 調整對白框遮罩 ---")
+    body_mask = _tune_mask(cv2, frame, body_roi, "對白框遮罩", body_initial)
+    if body_mask is None:
         print("已取消，未寫入 profile。")
         return 2
+
+    speaker_mask = None
+    if speaker_roi is not None:
+        # 發話者可能是白色也可能是淺藍，colorkey 模式預設兩色都收
+        speaker_initial = replace(
+            body_mask,
+            text_colors=sorted({*(text_colors or []), "#fefefe", "#5dbcfe"}),
+            min_text_pixels=max(8, body_mask.min_text_pixels // 4),
+        )
+        print("--- 調整姓名框遮罩 ---")
+        speaker_mask = _tune_mask(cv2, frame, speaker_roi, "姓名框遮罩", speaker_initial)
+        if speaker_mask is None:
+            print("已取消，未寫入 profile。")
+            return 2
+
+    cv2.destroyAllWindows()
 
     profile = Profile(
         name=profile_path.stem,
@@ -120,10 +185,14 @@ def run_calibration(
         capture_region=None if window_title else resolved,
         body_roi=body_roi,
         speaker_roi=speaker_roi,
-        mask=mask_cfg,
+        mask=body_mask,
+        speaker_mask=speaker_mask,
     )
     profile.save(profile_path)
     print(f"已寫入 profile：{profile_path}")
-    print(f"  對白框 {body_roi}")
-    print(f"  姓名框 {speaker_roi or '(未設定，將不檢查發話者)'}")
+    print(f"  對白框 {body_roi}  取字方式 {body_mask.method}")
+    if speaker_roi:
+        print(f"  姓名框 {speaker_roi}  取字方式 {speaker_mask.method}")
+    else:
+        print("  姓名框 未設定，將不檢查發話者")
     return 0

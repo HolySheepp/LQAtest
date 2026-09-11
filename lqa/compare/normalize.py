@@ -51,6 +51,35 @@ _CONFUSABLE_MAP = {
 _CONFUSABLE_TRANS = str.maketrans(_CONFUSABLE_MAP)
 
 
+# 遊戲畫面的發話者後面會接一組流水號，例如 "Cyan(11201)"。
+# 那是內部 ID，不參與比對，要在比對前剝掉。
+_SPEAKER_ID_RE = re.compile(r"\s*[(（]\s*[0-9]{1,10}\s*[)）]\s*$")
+
+# 文本中的顏色標記，用來掃出整份文本用過哪些顏色
+_COLOR_TAG_RE = re.compile(r"<color\s*=\s*#?([0-9a-fA-F]{3,8})\s*>", re.IGNORECASE)
+
+
+def strip_speaker_id(text: str) -> str:
+    """"Cyan(11201)" -> "Cyan"。
+
+    遊戲畫面會在發話者名字後面顯示內部流水號，比對時必須忽略，
+    否則每一句都會被判成發話者錯誤。
+    """
+    return _SPEAKER_ID_RE.sub("", display_key(text)).strip()
+
+
+def extract_colors(text: str) -> set[str]:
+    """取出字串裡所有 <color=#xxxxxx> 的顏色值，正規化成 #rrggbb。"""
+    found: set[str] = set()
+    for raw in _COLOR_TAG_RE.findall(text or ""):
+        value = raw.lower()
+        if len(value) == 3:
+            value = "".join(ch * 2 for ch in value)
+        if len(value) >= 6:
+            found.add("#" + value[:6])
+    return found
+
+
 def has_cjk(text: str) -> bool:
     """是否含中日文字元。目標語為英文時，命中即代表未翻譯/未套用。"""
     return bool(_CJK_RE.search(text or ""))

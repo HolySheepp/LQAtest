@@ -5,15 +5,27 @@
   "body_roi": [320, 640, 960, 150],
   "speaker_roi": [320, 596, 260, 40],
   "mask": {
-    "method": "otsu",
+    "method": "value",
     "invert": false,
     "upscale": 2,
-    "clahe": true,
+    "clahe": false,
     "blur": 3,
     "bright_threshold": 170,
+    "color_tolerance": 60,
+    "text_colors": ["#fefefe"],
     "min_text_pixels": 40
   },
-  "speaker_mask": null,
+  "speaker_mask": {
+    "method": "value",
+    "invert": false,
+    "upscale": 2,
+    "clahe": false,
+    "blur": 3,
+    "bright_threshold": 170,
+    "color_tolerance": 60,
+    "text_colors": ["#fefefe", "#5dbcfe"],
+    "min_text_pixels": 10
+  },
   "stability": {
     "poll_interval_ms": 80,
     "diff_threshold": 0.04,

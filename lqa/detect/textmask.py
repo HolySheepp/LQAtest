@@ -1,9 +1,11 @@
 """從 ROI 抽出「只剩文字」的二值遮罩。
 
-為什麼需要這一層：遊戲對白框是半透明的，後面的背景會動。
-如果直接拿原始像素做 frame diff，背景一動就會誤判成「文字變了」，
-一路狂觸發 OCR。先把 ROI 二值化只留高對比的文字筆畫，
-半透明層後面那些低對比的背景大多會被濾掉。
+為什麼需要這一層：對白框背景會隨場景變動（漸變變暗的畫面仍看得到底下的動態），
+直接拿原始像素做 frame diff 的話，背景一動就會誤判成「文字變了」，一路狂觸發 OCR。
+先把 ROI 轉成只剩文字筆畫的遮罩，被壓暗的背景就會被濾掉。
+
+取字方式見 MaskConfig 的說明；預設的 value（RGB 三通道最大值）能同時
+收得到白色對白、<color> 變色字與淺藍發話者名。
 """
 
 from __future__ import annotations
@@ -40,29 +42,75 @@ def to_gray(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
+def hex_to_bgr(value: str) -> tuple[int, int, int]:
+    """"#ff8a00" -> (0, 138, 255)，注意 OpenCV 是 BGR 順序。"""
+    s = value.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(ch * 2 for ch in s)
+    if len(s) != 6:
+        raise ValueError(f"無法解析顏色：{value}")
+    r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    return (b, g, r)
+
+
+def value_channel(image: np.ndarray) -> np.ndarray:
+    """RGB 三通道取最大值，等同 HSV 的 V。
+
+    比灰階好用的原因：灰階是加權平均，會低估飽和色。
+    #ff8a00 的灰階值只有 157，但 V 是 255，和白字同一個量級，
+    所以同一個門檻就能同時收白字與變色字。
+    """
+    if image.ndim == 2:
+        return image
+    return image[:, :, :3].max(axis=2)
+
+
+def _colorkey_mask(image: np.ndarray, cfg: MaskConfig) -> np.ndarray:
+    """只保留與指定顏色夠接近的像素。"""
+    if image.ndim == 2:
+        raise ValueError("colorkey 需要彩色影像")
+    if not cfg.text_colors:
+        raise ValueError("method=colorkey 但 text_colors 是空的")
+
+    pixels = image[:, :, :3].astype(np.int16)
+    tol_sq = float(cfg.color_tolerance) ** 2
+    mask = np.zeros(image.shape[:2], dtype=bool)
+    for color in cfg.text_colors:
+        target = np.array(hex_to_bgr(color), dtype=np.int16)
+        delta = pixels - target
+        mask |= np.einsum("ijk,ijk->ij", delta, delta) <= tol_sq
+    return (mask * 255).astype(np.uint8)
+
+
 def build_mask(image: np.ndarray, cfg: MaskConfig) -> np.ndarray:
     """回傳 uint8 遮罩，文字為 255、其餘為 0。
 
     image 可為彩色或灰階，尺寸為 ROI 大小（未放大）。
     """
     cv2 = _require_cv2()
-    gray = to_gray(image)
 
-    if cfg.blur and cfg.blur >= 3:
-        gray = cv2.medianBlur(gray, cfg.blur | 1)
+    if cfg.method == "colorkey":
+        mask = _colorkey_mask(image, cfg)
+    elif cfg.method == "value":
+        channel = value_channel(image)
+        if cfg.blur and cfg.blur >= 3:
+            channel = cv2.medianBlur(channel, cfg.blur | 1)
+        _, mask = cv2.threshold(channel, cfg.bright_threshold, 255, cv2.THRESH_BINARY)
+    else:
+        gray = to_gray(image)
+        if cfg.blur and cfg.blur >= 3:
+            gray = cv2.medianBlur(gray, cfg.blur | 1)
+        if cfg.clahe:
+            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
 
-    if cfg.clahe:
-        gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-
-    if cfg.method == "bright":
-        # 文字比背景亮很多時最穩：直接砍亮度門檻
-        _, mask = cv2.threshold(gray, cfg.bright_threshold, 255, cv2.THRESH_BINARY)
-    elif cfg.method == "adaptive":
-        mask = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, -8
-        )
-    else:  # otsu
-        _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if cfg.method == "bright":
+            _, mask = cv2.threshold(gray, cfg.bright_threshold, 255, cv2.THRESH_BINARY)
+        elif cfg.method == "adaptive":
+            mask = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, -8
+            )
+        else:  # otsu
+            _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     if cfg.invert:
         mask = cv2.bitwise_not(mask)

@@ -30,7 +30,7 @@ LineCallback = Callable[[CapturedLine], None]
 def _ocr_input(image: np.ndarray, mask: np.ndarray, cfg: MaskConfig, source: str) -> np.ndarray:
     """依設定決定送進 OCR 的影像。
 
-    預設用二值遮罩：對白框半透明、背景會動，二值化後乾淨很多。
+    預設用二值遮罩：對白框背景會隨場景變動，取字之後乾淨很多。
     若某些字體在二值化後反而破碎，可改成 gray 或 color。
     """
     if source == "color":

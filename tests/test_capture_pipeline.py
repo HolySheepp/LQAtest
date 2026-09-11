@@ -14,15 +14,14 @@ import pytest
 
 cv2 = pytest.importorskip("cv2", reason="擷取管線需要 opencv")
 
-from lqa.config import MaskConfig, StabilityConfig
+from lqa.config import MaskConfig, StabilityConfig  # noqa: E402
 from lqa.detect import textmask as tm
 from lqa.detect.stability import StabilityTracker
 
 W, H = 900, 160
 BOX_ALPHA = 0.55
 
-# 白字配深色半透明框，用 bright 門檻抽遮罩最乾淨
-MASK_CFG = MaskConfig(method="bright", bright_threshold=170, clahe=False, blur=3,
+MASK_CFG = MaskConfig(method="value", bright_threshold=170, clahe=False, blur=3,
                       upscale=2, min_text_pixels=40)
 
 
@@ -51,6 +50,121 @@ def make_frame(text: str, phase: int = 0) -> np.ndarray:
             cv2.putText(frame, text, (20, 90), cv2.FONT_HERSHEY_SIMPLEX,
                         0.9, color, thickness, cv2.LINE_AA)
     return frame
+
+
+DIALOGUE_WHITE = "#fefefe"
+ACCENT_ORANGE = "#ff8a00"
+SPEAKER_BLUE = "#5dbcfe"
+
+
+def _bgr(hex_color: str) -> tuple[int, int, int]:
+    return tm.hex_to_bgr(hex_color)
+
+
+def make_dialogue_frame(segments: list[tuple[str, str]], bright_scene: bool = True) -> np.ndarray:
+    """模擬真實對話框：背景漸變變暗，文字直接疊在上面。
+
+    segments 是 (文字, 顏色) 的序列，會橫向接續繪製，
+    用來模擬 <color=#xxxxxx> 造成的同一行內變色。
+    bright_scene=True 代表背景原本是亮的（白色場景），
+    用來驗證「就算背景是白的，變暗之後也不會被誤認成文字」。
+    """
+    base = 250 if bright_scene else 90
+    frame = np.full((H, W, 3), base, np.uint8)
+    # 由上往下遞減的變暗係數
+    factor = np.linspace(0.55, 0.30, H, dtype=np.float32)[:, None, None]
+    frame = (frame * factor).astype(np.uint8)
+
+    x = 20
+    for text, color in segments:
+        for draw_color, thickness in ((_bgr(color), 2),):
+            cv2.putText(frame, text, (x, 95), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9, draw_color, thickness, cv2.LINE_AA)
+        (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+        x += tw + 12
+    return frame
+
+
+class TestColoredTextExtraction:
+    """對白預設是 #fefefe，但 <color=#xxxxxx> 會讓部分字變色。
+    取字方式必須同時收得到白字與變色字，否則 OCR 會缺字。
+    """
+
+    SEGMENTS = [("This is the", DIALOGUE_WHITE), ("reward", ACCENT_ORANGE),
+                ("for your work.", DIALOGUE_WHITE)]
+
+    def test_value_channel_keeps_saturated_colors(self):
+        """#ff8a00 的 RGB 最大值是 255，和白字同一個量級。"""
+        for color in (DIALOGUE_WHITE, ACCENT_ORANGE, SPEAKER_BLUE):
+            patch = np.full((4, 4, 3), _bgr(color), np.uint8)
+            assert tm.value_channel(patch).max() >= 250, f"{color} 的 V 值過低"
+
+    def test_grayscale_would_have_dropped_orange(self):
+        """對照組：說明為什麼不能用灰階亮度當門檻。"""
+        patch = np.full((4, 4, 3), _bgr(ACCENT_ORANGE), np.uint8)
+        gray_value = int(tm.to_gray(patch).max())
+        assert gray_value < MaskConfig().bright_threshold, (
+            f"#ff8a00 的灰階值是 {gray_value}，本測試假設它低於門檻"
+        )
+
+    def test_value_method_captures_both_white_and_colored_words(self):
+        cfg = MaskConfig(method="value")
+        full = tm.build_mask(make_dialogue_frame(self.SEGMENTS), cfg)
+        white_only = tm.build_mask(
+            make_dialogue_frame([s for s in self.SEGMENTS if s[1] == DIALOGUE_WHITE]), cfg
+        )
+        # 多了一個橘色詞，遮罩的文字像素必須明顯變多
+        assert tm.text_pixel_count(full) > tm.text_pixel_count(white_only) * 1.1
+
+    def test_bright_method_loses_the_colored_word(self):
+        """回歸測試：舊的 bright（灰階）取字方式會把變色字整段吃掉。"""
+        cfg = MaskConfig(method="bright", clahe=False)
+        full = tm.build_mask(make_dialogue_frame(self.SEGMENTS), cfg)
+        white_only = tm.build_mask(
+            make_dialogue_frame([s for s in self.SEGMENTS if s[1] == DIALOGUE_WHITE]), cfg
+        )
+        assert tm.text_pixel_count(full) == pytest.approx(
+            tm.text_pixel_count(white_only), rel=0.05
+        ), "本測試假設灰階門檻會濾掉橘字；若不成立代表 bright 已不再是問題"
+
+    def test_colorkey_needs_the_colour_in_its_palette(self):
+        without = MaskConfig(method="colorkey", text_colors=[DIALOGUE_WHITE])
+        with_orange = MaskConfig(
+            method="colorkey", text_colors=[DIALOGUE_WHITE, ACCENT_ORANGE]
+        )
+        frame = make_dialogue_frame(self.SEGMENTS)
+        assert tm.text_pixel_count(tm.build_mask(frame, with_orange)) > (
+            tm.text_pixel_count(tm.build_mask(frame, without)) * 1.1
+        )
+
+    def test_colorkey_rejects_empty_palette(self):
+        with pytest.raises(ValueError):
+            tm.build_mask(make_dialogue_frame(self.SEGMENTS),
+                          MaskConfig(method="colorkey", text_colors=[]))
+
+    def test_bright_scene_background_is_not_mistaken_for_text(self):
+        """就算場景是白的，漸變變暗後也不該被當成文字。"""
+        cfg = MaskConfig(method="value")
+        blank = tm.build_mask(make_dialogue_frame([], bright_scene=True), cfg)
+        assert tm.text_pixel_count(blank) < cfg.min_text_pixels
+
+    def test_speaker_blue_is_captured_by_value_method(self):
+        cfg = MaskConfig(method="value", min_text_pixels=8)
+        mask = tm.build_mask(make_dialogue_frame([("Cyan(11201)", SPEAKER_BLUE)]), cfg)
+        assert tm.text_pixel_count(mask) > cfg.min_text_pixels
+
+
+class TestHexToBgr:
+    def test_parses_six_digit(self):
+        assert tm.hex_to_bgr("#ff8a00") == (0, 138, 255)
+
+    def test_parses_without_hash_and_shorthand(self):
+        assert tm.hex_to_bgr("fefefe") == (254, 254, 254)
+        assert tm.hex_to_bgr("#f80") == (0, 136, 255)
+
+    def test_rejects_garbage(self):
+        with pytest.raises(ValueError):
+            tm.hex_to_bgr("#12345")
 
 
 class TestMaskSuppressesMovingBackground:
