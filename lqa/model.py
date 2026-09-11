@@ -52,6 +52,7 @@ class ExpectedLine:
     source_zh: str = ""        # 文字對話（中文原文）
     target_en: str = ""        # 英文翻譯（比對的正確答案）
     note: str = ""             # 備註（不需翻譯，不參與比對）
+    sheet: str = ""            # 來源工作表名稱，例如 AVG1
     sheet_row: int = 0         # 原始檔案列號，方便回查
 
     def to_dict(self) -> dict[str, Any]:

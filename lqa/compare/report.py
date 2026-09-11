@@ -12,6 +12,7 @@ from . import normalize as nz
 
 HEADERS = [
     "分類",
+    "頁簽",
     "對話ID",
     "文本順序",
     "畫面順序",
@@ -52,6 +53,7 @@ def _row(issue: Issue) -> list[Any]:
     exp, cap = issue.expected, issue.captured
     return [
         CATEGORY_LABEL_ZH[issue.category],
+        exp.sheet if exp else "",
         exp.dialogue_id if exp else "",
         issue.expected_order or "",
         issue.actual_order or "",
@@ -125,7 +127,7 @@ def write_xlsx(result: CompareResult, path: str | Path, include_pass: bool = Tru
         if color:
             ws.cell(row=ws.max_row, column=1).fill = PatternFill("solid", fgColor=color)
 
-    widths = [16, 14, 10, 10, 14, 14, 60, 60, 10, 40, 12, 30]
+    widths = [16, 10, 14, 10, 10, 14, 14, 60, 60, 10, 40, 12, 30]
     for idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
     for row in ws.iter_rows(min_row=2):

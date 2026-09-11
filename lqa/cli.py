@@ -26,15 +26,105 @@ def _cmd_windows(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _script_colors(script: str | None, sheet: str | None) -> list[str]:
+DEFAULT_SCRIPT_DIR = Path("scripts")
+DEFAULT_SPEAKERS = Path("config/speakers.csv")
+
+
+def _resolve_script(path: str | None) -> str:
+    """沒指定 --script 時，自動找 scripts/ 裡唯一的一份文本。
+
+    這樣一般情況下不必打長路徑，也少一個打錯字的機會。
+    """
+    if path:
+        return path
+    if not DEFAULT_SCRIPT_DIR.is_dir():
+        raise FileNotFoundError(
+            f"沒有指定 --script，而且找不到 {DEFAULT_SCRIPT_DIR}/ 資料夾。"
+            "請把翻譯文本放進 scripts/，或用 --script 指定路徑。"
+        )
+    found = sorted(
+        p for p in DEFAULT_SCRIPT_DIR.iterdir()
+        if p.suffix.lower() in (".xlsx", ".xlsm", ".csv", ".tsv") and not p.name.startswith("~$")
+    )
+    if not found:
+        raise FileNotFoundError(
+            f"{DEFAULT_SCRIPT_DIR}/ 裡沒有任何 xlsx / csv / tsv 檔案。"
+            "請把翻譯文本放進去。"
+        )
+    if len(found) > 1:
+        names = "、".join(p.name for p in found)
+        raise ValueError(
+            f"{DEFAULT_SCRIPT_DIR}/ 裡有多份文本（{names}），"
+            "請用 --script 指定要用哪一份。"
+        )
+    print(f"使用文本：{found[0]}")
+    return str(found[0])
+
+
+def _resolve_speakers(path: str | None) -> str | None:
+    """沒指定 --speakers 時，自動用 config/speakers.csv（存在的話）。"""
+    if path:
+        return path
+    if DEFAULT_SPEAKERS.exists():
+        print(f"使用發話者對照表：{DEFAULT_SPEAKERS}")
+        return str(DEFAULT_SPEAKERS)
+    return None
+
+
+def _cmd_speakers(args: argparse.Namespace) -> int:
+    """從文本抓出所有發話者，產生對照表範本讓使用者填英文名。"""
+    import csv as _csv
+
+    from .compare.script_loader import load_script, load_speaker_map
+
+    from .compare.script_loader import ALL_SHEETS
+
+    script = _resolve_script(args.script)
+    out = Path(args.out)
+
+    existing: dict[str, str] = {}
+    if out.exists():
+        existing = load_speaker_map(out)
+        print(f"已有 {out}，保留其中 {len(existing)} 筆已填好的英文名。")
+
+    # 掃全部工作表，這樣對照表一次就涵蓋整個活動所有場景
+    names: list[str] = []
+    for line in load_script(script, sheets=ALL_SHEETS):
+        if line.speaker_zh and line.speaker_zh not in names:
+            names.append(line.speaker_zh)
+
+    if not names:
+        print("文本裡沒有任何發話者（名字欄都是空的），不需要對照表。")
+        return 0
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8", newline="") as fh:
+        writer = _csv.writer(fh)
+        writer.writerow(["名字", "English"])
+        for name in names:
+            writer.writerow([name, existing.get(name, "")])
+
+    blank = [n for n in names if not existing.get(n)]
+    print(f"已寫出 {out}，共 {len(names)} 位發話者。")
+    if blank:
+        print("")
+        print(f"還有 {len(blank)} 位沒有英文名，請用 Excel 或記事本打開檔案填第二欄：")
+        for name in blank:
+            print(f"  {name}")
+        print("")
+        print("留空的發話者不會被檢查，不影響對白比對，可以之後再補。")
+    return 0
+
+
+def _script_colors(script: str | None) -> list[str]:
     """把文本裡用過的 <color=#xxxxxx> 全部掃出來，當作 colorkey 的預設色盤。"""
     if not script:
         return ["#fefefe"]
     from .compare.normalize import extract_colors
-    from .compare.script_loader import load_script
+    from .compare.script_loader import ALL_SHEETS, load_script
 
     found: set[str] = {"#fefefe"}
-    for line in load_script(script, sheet=sheet):
+    for line in load_script(script, sheets=ALL_SHEETS):
         found |= extract_colors(line.target_en)
     return sorted(found)
 
@@ -42,7 +132,7 @@ def _script_colors(script: str | None, sheet: str | None) -> list[str]:
 def _cmd_colors(args: argparse.Namespace) -> int:
     import json
 
-    colors = _script_colors(args.script, args.sheet)
+    colors = _script_colors(_resolve_script(args.script))
     print(f"文本中用到的文字顏色共 {len(colors)} 種（含預設白色）：")
     for c in colors:
         print(f"  {c}")
@@ -61,7 +151,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
         profile_path=Path(args.profile),
         window_title=args.window,
         region=tuple(args.region) if args.region else None,
-        text_colors=_script_colors(args.script, args.sheet),
+        text_colors=_script_colors(args.script),
     )
 
 
@@ -133,8 +223,8 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     from .compare.script_loader import load_script, load_speaker_map, unknown_speakers
     from .record.store import load_sessions
 
-    speaker_map = load_speaker_map(args.speakers)
-    expected = load_script(args.script, speaker_map, sheet=args.sheet)
+    speaker_map = load_speaker_map(_resolve_speakers(args.speakers))
+    expected = load_script(_resolve_script(args.script), speaker_map, sheets=args.sheet)
     captured = load_sessions(list(args.session))
 
     unknown = unknown_speakers(expected)
@@ -170,11 +260,35 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 
 def _cmd_check_script(args: argparse.Namespace) -> int:
-    from .compare.script_loader import load_script, load_speaker_map, unknown_speakers
+    from .compare.script_loader import (
+        list_dialogue_sheets,
+        load_script,
+        load_speaker_map,
+        unknown_speakers,
+    )
 
-    speaker_map = load_speaker_map(args.speakers)
-    lines = load_script(args.script, speaker_map, sheet=args.sheet)
+    script = _resolve_script(args.script)
+    speaker_map = load_speaker_map(_resolve_speakers(args.speakers))
 
+    sheets = list_dialogue_sheets(script)
+    if not sheets:
+        print("找不到任何對白工作表。需要至少有『對話ID』與『英文翻譯』兩個欄位標題。")
+        return 2
+
+    print("")
+    print(f"找到 {len(sheets)} 個對白頁簽：")
+    for info in sheets:
+        print(f"  {info.name:<12}{info.line_count:>6} 句   "
+              f"ID {info.first_id} ~ {info.last_id}")
+    print("")
+
+    if not args.sheet and len(sheets) > 1:
+        print("要看某個頁簽的內容，加上 --sheet 指定，例如：")
+        print(f"  lqa check-script --sheet {sheets[0].name}")
+        print("比對時也一樣要指定，或用 --sheet all 把全部串成一條序列。")
+        return 0
+
+    lines = load_script(script, speaker_map, sheets=args.sheet)
     print(f"解析成功，共 {len(lines)} 句對話。")
     empty_target = [ln for ln in lines if not ln.target_en.strip()]
     if empty_target:
@@ -215,13 +329,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="改用絕對螢幕座標，不用視窗定位")
     p.add_argument("--script", default=None,
                    help="順便從翻譯文本掃出用過的文字顏色，當作 colorkey 的預設色盤")
-    p.add_argument("--sheet", default=None, help="xlsx 工作表名稱")
     p.set_defaults(func=_cmd_calibrate)
 
     p = sub.add_parser("colors", help="掃出翻譯文本用過的所有文字顏色")
-    p.add_argument("--script", required=True)
-    p.add_argument("--sheet", default=None)
+    p.add_argument("--script", default=None, help="不給就自動用 scripts/ 裡唯一的文本")
     p.set_defaults(func=_cmd_colors)
+
+    p = sub.add_parser("speakers", help="從文本掃出所有發話者，產生中英對照表範本")
+    p.add_argument("--script", default=None, help="不給就自動用 scripts/ 裡唯一的文本")
+    p.add_argument("--out", default=str(DEFAULT_SPEAKERS), help="對照表輸出路徑")
+    p.set_defaults(func=_cmd_speakers)
 
     p = sub.add_parser("probe", help="抓一張畫面診斷 profile，正式錄製前先跑這個")
     p.add_argument("--profile", default="config/profile.json")
@@ -248,10 +365,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_record)
 
     p = sub.add_parser("compare", help="把錄製結果與翻譯文本比對並輸出報告")
-    p.add_argument("--script", required=True, help="翻譯文本 xlsx / csv / tsv")
+    p.add_argument("--script", default=None,
+                   help="翻譯文本 xlsx / csv / tsv，不給就自動用 scripts/ 裡唯一的文本")
     p.add_argument("--session", required=True, nargs="+", help="一個或多個 session 目錄")
-    p.add_argument("--speakers", default=None, help="發話者中英對照表 csv")
-    p.add_argument("--sheet", default=None, help="xlsx 工作表名稱")
+    p.add_argument("--speakers", default=None,
+                   help="發話者中英對照表 csv，不給就自動用 config/speakers.csv")
+    p.add_argument("--sheet", default=None, nargs="+", metavar="NAME",
+                   help="要比對的頁簽，例如 --sheet AVG1；可給多個，或用 all 表示全部")
     p.add_argument("--out", default="reports/lqa_report", help="輸出檔名（不含副檔名）")
     p.add_argument("--pass-threshold", type=float, default=None)
     p.add_argument("--include-pass", action="store_true", help="csv 也輸出一致的句子")
@@ -259,10 +379,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fail-on-issue", action="store_true", help="有問題時回傳非 0 結束碼")
     p.set_defaults(func=_cmd_compare)
 
-    p = sub.add_parser("check-script", help="檢查翻譯文本是否能正確解析")
-    p.add_argument("--script", required=True)
-    p.add_argument("--speakers", default=None)
-    p.add_argument("--sheet", default=None)
+    p = sub.add_parser("check-script", help="列出頁簽並檢查翻譯文本是否能正確解析")
+    p.add_argument("--script", default=None, help="不給就自動用 scripts/ 裡唯一的文本")
+    p.add_argument("--speakers", default=None, help="不給就自動用 config/speakers.csv")
+    p.add_argument("--sheet", default=None, nargs="+", metavar="NAME",
+                   help="要檢視的頁簽；不給則只列出有哪些頁簽")
     p.set_defaults(func=_cmd_check_script)
 
     return parser

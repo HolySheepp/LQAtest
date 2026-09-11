@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -84,13 +85,20 @@ def _cell(row: Sequence[Any], col_idx: int | None) -> str:
     return str(value).strip()
 
 
-def _read_xlsx(path: Path, sheet: str | None) -> list[list[Any]]:
+def _read_xlsx_sheets(path: Path) -> dict[str, list[list[Any]]]:
+    """讀出活頁簿裡的所有工作表，保持原本順序。
+
+    實際的專案檔一個活頁簿會有十幾個工作表（活動簡介、大綱、AVG1..AVG10），
+    對白只在其中幾個裡面，所以不能假設資料在第一個工作表。
+    """
     from openpyxl import load_workbook
 
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
-        return [list(r) for r in ws.iter_rows(values_only=True)]
+        return {
+            name: [list(r) for r in wb[name].iter_rows(values_only=True)]
+            for name in wb.sheetnames
+        }
     finally:
         wb.close()
 
@@ -101,68 +109,216 @@ def _read_delimited(path: Path) -> list[list[Any]]:
         return [list(r) for r in csv.reader(fh, delimiter=delimiter)]
 
 
+# 對照表的欄位標題別名。這份表是跨檔案共用的，格式不一定由我們決定，
+# 所以中英兩欄都盡量多認幾種寫法。
+SPEAKER_ZH_ALIASES = (
+    "名字", "中文", "中文名", "中文名字", "中文姓名", "發話者", "角色",
+    "角色名", "說話者", "原文", "speaker", "name", "chinese", "cn", "zh",
+)
+SPEAKER_EN_ALIASES = (
+    "english", "en", "英文", "英文名", "英文名字", "英文姓名", "英譯",
+    "翻譯", "譯名", "name_en", "englishname",
+)
+
+
+def _speaker_columns(header: Sequence[Any]) -> tuple[int, int] | None:
+    """從標題列找出中文名與英文名各在第幾欄。找不到就回 None。"""
+    zh_idx = en_idx = None
+    for idx, cell in enumerate(header):
+        key = _norm_header(cell)
+        if zh_idx is None and key in SPEAKER_ZH_ALIASES:
+            zh_idx = idx
+        elif en_idx is None and key in SPEAKER_EN_ALIASES:
+            en_idx = idx
+    if zh_idx is None or en_idx is None:
+        return None
+    return zh_idx, en_idx
+
+
 def load_speaker_map(path: str | Path | None) -> dict[str, str]:
-    """讀取『中文發話者名 -> 英文發話者名』對照表（兩欄 csv，可有標題）。"""
+    """讀取跨檔案共用的『中文發話者名 -> 英文發話者名』對照表。
+
+    這張表是發話者檢查的正確答案來源：文本裡的發話者是中文，
+    遊戲畫面顯示的是英文，所以要先用中文名查出對應英文名，
+    再拿去和畫面 OCR 到的名字比對。
+
+    支援 csv / tsv / xlsx。優先靠標題文字找中英兩欄，
+    找不到標題就退回「第一欄中文、第二欄英文」。
+    """
     if not path:
         return {}
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"找不到發話者對照表：{p}")
+
+    if p.suffix.lower() in (".xlsx", ".xlsm"):
+        sheets = _read_xlsx_sheets(p)
+        rows = next(iter(sheets.values())) if sheets else []
+    else:
+        rows = _read_delimited(p)
+
+    rows = [r for r in rows if any(str(c).strip() for c in r if c is not None)]
+    if not rows:
+        return {}
+
+    columns = None
+    body = rows
+    for idx, row in enumerate(rows[:5]):
+        found = _speaker_columns(row)
+        if found:
+            columns, body = found, rows[idx + 1:]
+            break
+    if columns is None:
+        columns = (0, 1)  # 沒有可辨識的標題，當成兩欄表
+
+    zh_idx, en_idx = columns
     mapping: dict[str, str] = {}
-    for row in _read_delimited(p):
-        if len(row) < 2:
-            continue
-        zh, en = str(row[0]).strip(), str(row[1]).strip()
+    for row in body:
+        zh, en = _cell(row, zh_idx), _cell(row, en_idx)
         if not zh or not en:
             continue
-        if _norm_header(zh) in COLUMN_ALIASES["speaker_zh"]:
-            continue  # 標題列
-        mapping[zh] = en
+        if _norm_header(zh) in SPEAKER_ZH_ALIASES:
+            continue  # 殘留的標題列
+        mapping.setdefault(zh, en)
     return mapping
 
 
-def load_script(
-    path: str | Path,
-    speaker_map: dict[str, str] | None = None,
-    sheet: str | None = None,
+ALL_SHEETS = "all"
+
+
+@dataclass
+class SheetInfo:
+    """一個看起來裝著對白的工作表。"""
+
+    name: str
+    line_count: int
+    first_id: str
+    last_id: str
+
+
+def _read_sheets(path: Path) -> dict[str, list[list[Any]]]:
+    """統一成 {工作表名稱: 列資料}。csv/tsv 視為單一工作表。"""
+    if not path.exists():
+        raise FileNotFoundError(f"找不到翻譯文本：{path}")
+    suffix = path.suffix.lower()
+    if suffix in (".xlsx", ".xlsm"):
+        return _read_xlsx_sheets(path)
+    if suffix in (".csv", ".tsv", ".txt"):
+        return {path.stem: _read_delimited(path)}
+    raise ValueError(f"不支援的檔案格式：{path.suffix}（請用 xlsx / csv / tsv）")
+
+
+def _parse_sheet(
+    name: str,
+    rows: Sequence[Sequence[Any]],
+    speaker_map: dict[str, str],
+    start_order: int,
 ) -> list[ExpectedLine]:
-    """讀進翻譯文本，回傳依列順序排好的 ExpectedLine 清單。"""
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"找不到翻譯文本：{p}")
-
-    if p.suffix.lower() in (".xlsx", ".xlsm"):
-        rows = _read_xlsx(p, sheet)
-    elif p.suffix.lower() in (".csv", ".tsv", ".txt"):
-        rows = _read_delimited(p)
-    else:
-        raise ValueError(f"不支援的檔案格式：{p.suffix}（請用 xlsx / csv / tsv）")
-
     header_idx = _find_header_row(rows)
     cols = _build_column_map(rows[header_idx])
-    speaker_map = speaker_map or {}
 
     lines: list[ExpectedLine] = []
     for offset, row in enumerate(rows[header_idx + 1:], start=1):
         dialogue_id = _cell(row, cols.get("dialogue_id"))
         if not dialogue_id:
             continue  # 場景說明列 / 轉場註記列
-        target_en = _cell(row, cols.get("target_en"))
         speaker_zh = _cell(row, cols.get("speaker_zh"))
         lines.append(
             ExpectedLine(
-                order=len(lines),
+                order=start_order + len(lines),
                 dialogue_id=dialogue_id,
                 speaker_zh=speaker_zh,
                 speaker_en=speaker_map.get(speaker_zh, ""),
                 source_zh=_cell(row, cols.get("source_zh")),
-                target_en=target_en,
+                target_en=_cell(row, cols.get("target_en")),
                 note=_cell(row, cols.get("note")),
+                sheet=name,
                 sheet_row=header_idx + 1 + offset,  # 1-based，對應試算表列號
             )
         )
+    return lines
+
+
+def list_dialogue_sheets(path: str | Path) -> list[SheetInfo]:
+    """列出活頁簿裡看起來裝著對白的工作表。
+
+    判準是該工作表找得到標題列，而且至少有一列有對話ID。
+    活動簡介、大綱這類工作表會自然被排除。
+    """
+    found: list[SheetInfo] = []
+    for name, rows in _read_sheets(Path(path)).items():
+        try:
+            lines = _parse_sheet(name, rows, {}, 0)
+        except ValueError:
+            continue  # 沒有標題列，不是對白表
+        if lines:
+            found.append(
+                SheetInfo(
+                    name=name,
+                    line_count=len(lines),
+                    first_id=lines[0].dialogue_id,
+                    last_id=lines[-1].dialogue_id,
+                )
+            )
+    return found
+
+
+def load_script(
+    path: str | Path,
+    speaker_map: dict[str, str] | None = None,
+    sheets: str | Sequence[str] | None = None,
+) -> list[ExpectedLine]:
+    """讀進翻譯文本，回傳依列順序排好的 ExpectedLine 清單。
+
+    sheets 可以是單一名稱、名稱清單、"all"（全部串起來），或 None。
+    None 時：只有一個對白工作表就直接用；有多個則報錯要求指定，
+    免得把十個場景串成一條序列後，只錄了其中一個場景卻報出滿江紅的缺句。
+    """
+    p = Path(path)
+    all_rows = _read_sheets(p)
+    speaker_map = speaker_map or {}
+
+    requested = [sheets] if isinstance(sheets, str) else list(sheets or [])
+    if any(name.lower() == ALL_SHEETS for name in requested):
+        wanted = list(all_rows)
+    elif requested:
+        wanted = requested
+    else:
+        available = list_dialogue_sheets(p)
+        if not available:
+            raise ValueError(
+                "翻譯文本裡找不到任何對白工作表。"
+                "需要至少有『對話ID』與『英文翻譯』兩個欄位標題。"
+            )
+        if len(available) > 1:
+            listing = "、".join(
+                f"{s.name}({s.line_count}句)" for s in available
+            )
+            raise ValueError(
+                f"這份文本有多個對白工作表：{listing}。\n"
+                f"請用 --sheet 指定要用哪一個（例如 --sheet {available[0].name}），"
+                f"或用 --sheet all 把全部串成一條序列。"
+            )
+        wanted = [available[0].name]
+
+    missing = [name for name in wanted if name not in all_rows]
+    if missing:
+        raise ValueError(
+            f"找不到工作表：{'、'.join(missing)}。"
+            f"這個檔案有：{'、'.join(all_rows)}"
+        )
+
+    lines: list[ExpectedLine] = []
+    skipped: list[str] = []
+    for name in wanted:
+        try:
+            lines.extend(_parse_sheet(name, all_rows[name], speaker_map, len(lines)))
+        except ValueError:
+            skipped.append(name)
+
     if not lines:
-        raise ValueError("翻譯文本解析後沒有任何有效對話列（每列都缺對話ID）。")
+        detail = f"（略過了沒有標題列的工作表：{'、'.join(skipped)}）" if skipped else ""
+        raise ValueError(f"翻譯文本解析後沒有任何有效對話列。{detail}")
     return lines
 
 
