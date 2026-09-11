@@ -71,6 +71,112 @@ def _resolve_speakers(path: str | None) -> str | None:
     return None
 
 
+def _cmd_start(_args: argparse.Namespace) -> int:
+    """檢查目前進度，並明確指出下一步該下哪個指令。
+
+    使用者不是工程背景，最容易卡住的不是指令本身，
+    而是不知道自己走到哪一步、下一步該做什麼。
+    """
+    from .compare.script_loader import list_dialogue_sheets, load_speaker_map
+
+    print("")
+    print("=== LQA 檢查工具 ===")
+    print("")
+
+    todo: list[str] = []
+
+    # 1. 翻譯文本
+    script: str | None = None
+    sheets: list = []
+    try:
+        found = sorted(
+            p for p in DEFAULT_SCRIPT_DIR.iterdir()
+            if p.suffix.lower() in (".xlsx", ".xlsm", ".csv", ".tsv")
+            and not p.name.startswith("~$")
+        ) if DEFAULT_SCRIPT_DIR.is_dir() else []
+        if not found:
+            print("[ ] 翻譯文本    尚未放入。請把 xlsx 放進 scripts/ 資料夾")
+            todo.append("把翻譯文本放進 scripts/ 資料夾")
+        else:
+            script = str(found[0])
+            sheets = list_dialogue_sheets(script)
+            extra = f"（另有 {len(found) - 1} 份，需用 --script 指定）" if len(found) > 1 else ""
+            print(f"[v] 翻譯文本    {found[0].name}{extra}")
+            if sheets:
+                names = "、".join(f"{s.name}({s.line_count}句)" for s in sheets)
+                print(f"                對白頁簽：{names}")
+            else:
+                print("                找不到對白頁簽，請用 lqa check-script 看詳情")
+    except (OSError, ValueError) as exc:
+        print(f"[!] 翻譯文本    讀取失敗：{exc}")
+
+    # 2. 發話者對照表
+    if DEFAULT_SPEAKERS.exists():
+        try:
+            mapping = load_speaker_map(DEFAULT_SPEAKERS)
+            filled = len(mapping)
+            total = filled
+            if script:
+                from .compare.script_loader import ALL_SHEETS, load_script
+
+                names = {ln.speaker_zh for ln in load_script(script, sheets=ALL_SHEETS)
+                         if ln.speaker_zh}
+                total = len(names)
+                filled = len(names & set(mapping))
+            print(f"[v] 發話者對照  {DEFAULT_SPEAKERS}  已填 {filled}/{total}")
+            if filled < total:
+                print("                未填的發話者不會被檢查，可以之後再補")
+        except (OSError, ValueError) as exc:
+            print(f"[!] 發話者對照  讀取失敗：{exc}")
+    elif script:
+        print("[ ] 發話者對照  尚未產生")
+        todo.append("lqa speakers          產生發話者對照表，再用 Excel 填英文名")
+
+    # 3. profile
+    profile_path = Path("config/profile.json")
+    if profile_path.exists():
+        try:
+            profile = Profile.load(profile_path)
+            speaker = profile.speaker_roi or "未設定"
+            print(f"[v] 校準設定    {profile_path}")
+            print(f"                對白框 {profile.body_roi}  姓名框 {speaker}")
+            print(f"                取字方式 {profile.mask.method}")
+        except (OSError, ValueError) as exc:
+            print(f"[!] 校準設定    讀取失敗：{exc}")
+    else:
+        print("[ ] 校準設定    尚未校準")
+        todo.append("lqa windows           先找出雷電模擬器的視窗標題")
+        todo.append("lqa calibrate --window 雷電模擬器")
+
+    # 4. 錄製結果
+    sessions_dir = Path("sessions")
+    recorded = sorted(
+        (p for p in sessions_dir.iterdir() if (p / "lines.jsonl").exists()),
+        reverse=True,
+    ) if sessions_dir.is_dir() else []
+    if recorded:
+        print(f"[v] 錄製結果    共 {len(recorded)} 次，最新：{recorded[0].name}")
+    else:
+        print("[ ] 錄製結果    尚未錄製")
+
+    print("")
+    if todo:
+        print("下一步：")
+        for item in todo:
+            print(f"  {item}")
+    elif not recorded:
+        print("下一步：")
+        print("  lqa probe             先診斷校準對不對（很重要，不要跳過）")
+        print("  lqa record --name smoke --max-lines 10    確認沒問題再錄整章")
+    else:
+        print("下一步：")
+        print(f"  lqa show-session sessions\\{recorded[0].name} --full    檢查錄到什麼")
+        print(f"  lqa compare --session sessions\\{recorded[0].name} --out reports\\r1")
+    print("")
+    print("每個指令加 --help 可看完整參數。")
+    return 0
+
+
 def _cmd_speakers(args: argparse.Namespace) -> int:
     """從文本抓出所有發話者，產生對照表範本讓使用者填英文名。"""
     import csv as _csv
@@ -318,6 +424,9 @@ def _cmd_check_script(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lqa", description="遊戲在地化品質檢查工具")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("start", help="檢查目前進度，並指出下一步該做什麼")
+    p.set_defaults(func=_cmd_start)
 
     p = sub.add_parser("windows", help="列出目前所有可見視窗的標題")
     p.set_defaults(func=_cmd_windows)

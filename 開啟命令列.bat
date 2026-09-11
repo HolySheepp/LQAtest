@@ -1,20 +1,25 @@
 @echo off
+rem ---------------------------------------------------------------------------
+rem This file must stay PURE ASCII.
+rem cmd.exe reads batch files using the system ANSI codepage (cp950 on this
+rem machine), not UTF-8, so any Chinese text saved here turns into mojibake and
+rem corrupts the commands themselves. All Chinese output is printed by Python
+rem instead, which handles UTF-8 correctly.
+rem ---------------------------------------------------------------------------
 chcp 65001 >nul
 cd /d "%~dp0"
 set "PYTHONIOENCODING=utf-8"
-echo.
-echo   已在專案資料夾開啟命令列，可以直接輸入指令。
-echo.
-echo   常用：
-echo     lqa speakers            產生發話者對照表範本
-echo     lqa check-script        檢查翻譯文本讀不讀得到
-echo     lqa windows             列出視窗標題
-echo     lqa calibrate --window 雷電模擬器
-echo     lqa probe               診斷校準結果
-echo     lqa record --name smoke --max-lines 10
-echo     lqa show-session sessions\最新的資料夾 --full
-echo     lqa compare --session sessions\最新的資料夾 --out reports\smoke
-echo.
-echo   每個指令後面加 --help 可以看完整參數。
-echo.
+set "PYTHONPATH=%~dp0;%PYTHONPATH%"
+
+if not exist "%~dp0.venv\Scripts\python.exe" (
+    echo.
+    echo [ERROR] .venv not found. Run these two lines first:
+    echo     python -m venv .venv
+    echo     .venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-ocr.txt
+    echo.
+    cmd /k
+    exit /b 1
+)
+
+call "%~dp0lqa.bat" start
 cmd /k
