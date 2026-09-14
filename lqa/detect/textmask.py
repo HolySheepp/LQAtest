@@ -65,6 +65,31 @@ def value_channel(image: np.ndarray) -> np.ndarray:
     return image[:, :, :3].max(axis=2)
 
 
+def _hysteresis_mask(channel: np.ndarray, low: int, high: int) -> np.ndarray:
+    """雙門檻遲滯：高門檻找種子，低門檻取範圍，只留連通到種子的部分。
+
+    遊戲的對白字不是均勻的純色，而是「純白核心 -> 灰白過渡 -> 灰黑描邊」
+    這種帶抗鋸齒與描邊的結構。單一門檻對這種字本質上就不管用：
+    門檻高只留下核心，字會被挖空；門檻低才收得到完整筆畫，
+    但背景也一起進來。
+
+    遲滯門檻同時解決兩邊：核心一定過得了高門檻，所以每個筆畫都有種子；
+    過渡區過得了低門檻而且和核心相連，所以筆畫是完整的；
+    背景就算亮到過得了低門檻，因為連不到任何種子而被丟掉。
+    """
+    cv2 = _require_cv2()
+    candidates = (channel >= low).astype(np.uint8)
+    seeds = channel >= high
+    if not seeds.any():
+        return np.zeros_like(channel, dtype=np.uint8)
+
+    count, labels = cv2.connectedComponents(candidates, connectivity=8)
+    keep = np.zeros(count, dtype=bool)
+    keep[np.unique(labels[seeds])] = True
+    keep[0] = False                      # 0 是背景標籤
+    return (keep[labels] * 255).astype(np.uint8)
+
+
 def _colorkey_mask(image: np.ndarray, cfg: MaskConfig) -> np.ndarray:
     """只保留與指定顏色夠接近的像素。"""
     if image.ndim == 2:
@@ -91,6 +116,11 @@ def build_mask(image: np.ndarray, cfg: MaskConfig) -> np.ndarray:
 
     if cfg.method == "colorkey":
         mask = _colorkey_mask(image, cfg)
+    elif cfg.method == "hysteresis":
+        channel = value_channel(image)
+        if cfg.blur and cfg.blur >= 3:
+            channel = cv2.medianBlur(channel, cfg.blur | 1)
+        mask = _hysteresis_mask(channel, cfg.bright_threshold, cfg.seed_threshold)
     elif cfg.method == "value":
         channel = value_channel(image)
         if cfg.blur and cfg.blur >= 3:

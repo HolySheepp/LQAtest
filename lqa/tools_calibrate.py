@@ -23,20 +23,23 @@ import numpy as np
 from .config import MaskConfig, OcrConfig, Profile, Rect, StabilityConfig
 
 # 預覽時的切換順序，value 擺第一個因為那是建議值
-_METHODS = ("value", "colorkey", "otsu", "adaptive", "bright")
+_METHODS = ("hysteresis", "value", "colorkey", "otsu", "adaptive")
 
 _HELP = """
 遮罩預覽操作：
-  1 ~ 5       切換取字方式 (value / colorkey / otsu / adaptive / bright)
-  [ / ]       調整門檻（value/bright 調亮度門檻，colorkey 調容許色距）
+  1 ~ 5       切換取字方式 (hysteresis / value / colorkey / otsu / adaptive)
+  [ / ]       調整低門檻（colorkey 時調容許色距）
+  ; / '       調整 hysteresis 的高門檻（種子）
   i           反相（淺底深字時開）
   c           開關 CLAHE（只對 otsu/adaptive 有意義）
   - / =       調整 OCR 放大倍率
   s           存檔並進入下一步
   q / Esc     放棄離開
 
-建議用 value（預設）。它取 RGB 三通道最大值，白字與變色字會落在同一個量級，
-不必事先知道文本用了哪些顏色。目標：上半部原圖對照下，下半部只剩文字筆畫。
+建議用 hysteresis（預設）。遊戲的字是「純白核心 -> 灰白過渡 -> 灰黑描邊」的結構，
+單一門檻要嘛把字挖空、要嘛連背景一起收；遲滯門檻用高門檻找核心當種子、
+低門檻取完整筆畫，只留連通到種子的部分。
+目標：上半部原圖對照下，下半部只剩完整的文字筆畫，背景乾乾淨淨。
 """
 
 
@@ -93,11 +96,12 @@ def _tune_mask(
                 cfg.method = "value"
                 continue
 
-            knob = (
-                f"tol={cfg.color_tolerance}"
-                if cfg.method == "colorkey"
-                else f"thr={cfg.bright_threshold}"
-            )
+            if cfg.method == "colorkey":
+                knob = f"tol={cfg.color_tolerance}"
+            elif cfg.method == "hysteresis":
+                knob = f"low={cfg.bright_threshold} seed={cfg.seed_threshold}"
+            else:
+                knob = f"thr={cfg.bright_threshold}"
             info = (
                 f"{cfg.method} {knob} invert={cfg.invert} clahe={cfg.clahe} "
                 f"upscale={cfg.upscale} pixels={tm.text_pixel_count(mask)}"
@@ -125,6 +129,11 @@ def _tune_mask(
                     cfg.color_tolerance = min(255, cfg.color_tolerance + 5)
                 else:
                     cfg.bright_threshold = min(255, cfg.bright_threshold + 5)
+            elif key == ord(";"):
+                cfg.seed_threshold = max(cfg.bright_threshold + 5,
+                                         cfg.seed_threshold - 5)
+            elif key == ord("'"):
+                cfg.seed_threshold = min(255, cfg.seed_threshold + 5)
             elif key == ord("-"):
                 cfg.upscale = max(1, cfg.upscale - 1)
             elif key == ord("="):

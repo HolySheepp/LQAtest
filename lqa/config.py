@@ -23,9 +23,13 @@ class MaskConfig:
     會被背景內容牽著走的自適應方法。
 
     method 的選擇：
-      value    取 RGB 三通道的最大值（等同 HSV 的 V）再砍門檻。**預設，建議用這個。**
+      hysteresis 雙門檻：seed_threshold 找筆畫核心當種子，bright_threshold 取完整
+               筆畫，只保留連通到種子的部分。**預設，建議用這個。**
+               遊戲的字是「純白核心 -> 灰白過渡 -> 灰黑描邊」的結構，
+               單一門檻對它本質上就不管用：高門檻把字挖空，低門檻收進背景。
+      value    取 RGB 三通道的最大值（等同 HSV 的 V）再砍單一門檻。
                白字 #fefefe 的 V 是 254，橘字 #ff8a00 是 255，藍字 #5dbcfe 是 254，
-               一個門檻全收，不必事先知道文本用了哪些顏色。
+               所以不必事先知道文本用了哪些顏色。字體單純時夠用。
       colorkey 只取指定顏色附近的像素。精度最高，但漏掉任何一個變色就會缺字，
                需要先用 `lqa colors --script` 把文本裡所有顏色掃出來填進 text_colors。
       bright   灰階亮度門檻。**不建議**：灰階會低估飽和色，
@@ -34,7 +38,7 @@ class MaskConfig:
                自適應門檻，背景一複雜就會飄。留著當退路。
     """
 
-    method: str = "value"       # value | colorkey | bright | otsu | adaptive
+    method: str = "hysteresis"  # hysteresis | value | colorkey | bright | otsu | adaptive
     invert: bool = False        # 深色底淺色字時不用開；淺底深字才開
     upscale: int = 3            # OCR 前放大倍率，小字很吃這個
     clahe: bool = False         # 只對 otsu / adaptive 有意義，會破壞絕對門檻
@@ -44,6 +48,9 @@ class MaskConfig:
     # 100% 與 99%，170 掉到 83%、200 只剩 32%。門檻太高會只留下筆畫核心
     # 把字挖空。140 在辨識率與遮罩乾淨度之間取得平衡。
     bright_threshold: int = 140
+    # hysteresis 的高門檻（種子）。要高到只有筆畫核心過得了，
+    # 背景再亮也不該碰到；字的核心接近純白，所以 200 以上都很安全。
+    seed_threshold: int = 210
     color_tolerance: int = 60   # colorkey 的容許色距（BGR 歐氏距離）
     # 送 OCR 前把遮罩往外膨脹幾圈，用來補回門檻砍掉的筆畫本體。
     # 變動偵測要乾淨的遮罩（門檻高），OCR 要完整的筆畫（門檻低），
