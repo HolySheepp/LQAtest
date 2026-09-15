@@ -59,6 +59,24 @@ class SessionStore:
             return ""
         return rel
 
+    def save_shot(self, frame: np.ndarray, index: int) -> str:
+        """手動模式的原始截圖。
+
+        用 PNG 不用 JPEG：這些圖之後還要拿去 OCR，
+        壓縮痕跡會落在文字邊緣，正好是辨識最吃虧的地方。
+        """
+        from ..imageio import imwrite  # noqa: PLC0415
+
+        rel = f"shots/{index:05d}.png"
+        imwrite(self.dir / rel, frame)
+        return rel
+
+    def remove_shot(self, rel: str) -> None:
+        (self.dir / rel).unlink(missing_ok=True)
+
+    def list_shots(self) -> list[Path]:
+        return sorted(self.shots_dir.glob("*.png"))
+
     def append(self, line: CapturedLine) -> None:
         self._fh.write(json.dumps(line.to_dict(), ensure_ascii=False) + "\n")
         self._fh.flush()
@@ -75,6 +93,19 @@ class SessionStore:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+def session_shots(session_dir: str | Path) -> list[Path]:
+    """手動模式存下的原始截圖，依檔名排序就是拍攝順序。"""
+    return sorted(Path(session_dir).glob("shots/*.png"))
+
+
+def session_profile(session_dir: str | Path) -> dict[str, Any] | None:
+    """錄製當下用的 profile。離線辨識要用同一組 ROI 與遮罩參數。"""
+    meta = Path(session_dir) / "meta.json"
+    if not meta.exists():
+        return None
+    return json.loads(meta.read_text(encoding="utf-8")).get("profile")
 
 
 def iter_session(session_dir: str | Path) -> Iterator[CapturedLine]:

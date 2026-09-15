@@ -185,30 +185,44 @@ def _cmd_start(_args: argparse.Namespace) -> int:
         todo.append("lqa windows           先找出雷電模擬器的視窗標題")
         todo.append("lqa calibrate --window 雷電模擬器")
 
-    # 4. 錄製結果
+    # 4. 截圖與辨識
+    from .record.store import session_shots
+
     sessions_dir = Path("sessions")
-    recorded = sorted(
-        (p for p in sessions_dir.iterdir() if (p / "lines.jsonl").exists()),
-        reverse=True,
+    sessions = sorted(
+        (p for p in sessions_dir.iterdir() if p.is_dir()), reverse=True
     ) if sessions_dir.is_dir() else []
-    if recorded:
-        print(f"[v] 錄製結果    共 {len(recorded)} 次，最新：{recorded[0].name}")
+    latest = sessions[0] if sessions else None
+    shots = len(session_shots(latest)) if latest else 0
+    read_done = bool(latest and (latest / "lines.jsonl").exists())
+
+    # 只認手動截圖的 session；舊的自動錄製沒有 shots，流程不同
+    manual = [s for s in sessions if session_shots(s)]
+    latest = manual[0] if manual else None
+    shots = len(session_shots(latest)) if latest else 0
+    read_done = bool(latest and (latest / "lines.jsonl").exists())
+
+    if latest is None:
+        note = f"（另有 {len(sessions)} 個舊的自動錄製 session）" if sessions else ""
+        print(f"[ ] 截圖        尚未開始{note}")
     else:
-        print("[ ] 錄製結果    尚未錄製")
+        print(f"[v] 截圖        共 {len(manual)} 次，最新：{latest.name}（{shots} 張）")
+        print(f"[{'v' if read_done else ' '}] 辨識        "
+              + ("已完成" if read_done else "尚未辨識"))
 
     print("")
+    print("下一步：")
     if todo:
-        print("下一步：")
         for item in todo:
             print(f"  {item}")
-    elif not recorded:
-        print("下一步：")
+    elif latest is None:
         print("  lqa probe             先診斷校準對不對（很重要，不要跳過）")
-        print("  lqa record --name smoke --max-lines 10    確認沒問題再錄整章")
+        print("  lqa shoot --name ch1  看到句子顯示完整就按 F9 拍一張")
+    elif not read_done:
+        print(f"  lqa read sessions\\{latest.name}")
     else:
-        print("下一步：")
-        print(f"  lqa show-session sessions\\{recorded[0].name} --full    檢查錄到什麼")
-        print(f"  lqa compare --session sessions\\{recorded[0].name} --out reports\\r1")
+        print(f"  lqa show-session sessions\\{latest.name} --full    檢查辨識結果")
+        print(f"  lqa compare --session sessions\\{latest.name} --out reports\\r1")
     print("")
     print("每個指令加 --help 可看完整參數。")
     return 0
@@ -346,6 +360,81 @@ def _cmd_show_session(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_shoot(args: argparse.Namespace) -> int:
+    from .record.shooter import Shooter
+    from .record.store import SessionStore
+
+    profile = Profile.load(args.profile)
+    store = SessionStore(args.out, args.name)
+
+    print("")
+    print("=== 手動截圖 ===")
+    print(f"存放位置：{store.dir}")
+    print("")
+    print(f"  {args.key.upper():<6} 截圖（看到這句顯示完整了再按）")
+    print(f"  {args.undo_key.upper():<6} 取消上一張")
+    print("  Ctrl+C  結束")
+    print("")
+    print("截圖當下不做辨識，所以按下去幾乎沒有延遲，模擬器也不會變慢。")
+    print("辨識與比對留到之後離線做。")
+    print("")
+
+    def on_shot(count: int, _path: str) -> None:
+        print(f"  第 {count} 張")
+
+    shooter = Shooter(profile, store, shoot_key=args.key,
+                      undo_key=args.undo_key, on_shot=on_shot)
+    try:
+        total = shooter.run()
+    finally:
+        store.close()
+
+    print("")
+    print(f"共 {total} 張截圖：{store.dir}")
+    if total:
+        print("接著執行：")
+        print(f"  lqa read {store.dir}")
+    return 0
+
+
+def _ensure_read(session: str) -> None:
+    """session 有截圖但還沒辨識的話，先跑一次辨識。"""
+    from .record.reader import read_session
+    from .record.store import session_shots
+
+    path = Path(session)
+    if (path / "lines.jsonl").exists():
+        return
+    if not session_shots(path):
+        return
+    print(f"{session} 尚未辨識，先跑一次 OCR：")
+    read_session(path, on_progress=lambda done, total, _l: (
+        print(f"  {done}/{total}") if done % 10 == 0 or done == total else None
+    ))
+    print("")
+
+
+def _cmd_read(args: argparse.Namespace) -> int:
+    from .compare.normalize import display_key
+    from .record.reader import read_session
+
+    profile = Profile.load(args.profile) if args.profile else None
+
+    def on_progress(done: int, total: int, line) -> None:
+        preview = display_key(line.body_text)
+        if len(preview) > 60:
+            preview = preview[:57] + "..."
+        print(f"  {done:>4}/{total}  {preview}")
+
+    lines = read_session(args.session, profile=profile, on_progress=on_progress,
+                         do_clean=not args.no_clean)
+    print("")
+    print(f"辨識完成，共 {len(lines)} 句。")
+    print("接著執行：")
+    print(f"  lqa compare --session {args.session} --out reports/r1")
+    return 0
+
+
 def _cmd_record(args: argparse.Namespace) -> int:
     from .record.recorder import Recorder
     from .record.store import SessionStore
@@ -382,6 +471,10 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
     speaker_map = load_speaker_map(_resolve_speakers(args.speakers))
     expected = load_script(_resolve_script(args.script), speaker_map, sheets=args.sheet)
+
+    # 手動截圖的 session 還沒辨識過的話，先辨識再比對，不用多下一道指令
+    for session in args.session:
+        _ensure_read(session)
     captured = load_sessions(list(args.session))
 
     unknown = unknown_speakers(expected)
@@ -519,7 +612,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verbose", action="store_true", help="一併顯示信心值與截圖路徑")
     p.set_defaults(func=_cmd_show_session)
 
-    p = sub.add_parser("record", help="錄製一段對話")
+    p = sub.add_parser("shoot", help="手動截圖：看到句子顯示完整就按鍵拍一張")
+    p.add_argument("--profile", default="config/profile.json")
+    p.add_argument("--out", default="sessions", help="session 存放根目錄")
+    p.add_argument("--name", default=None, help="這次的名稱，例如 ch1_school")
+    p.add_argument("--key", default="f9", help="截圖鍵，預設 f9")
+    p.add_argument("--undo-key", default="f10", help="取消上一張的按鍵，預設 f10")
+    p.set_defaults(func=_cmd_shoot)
+
+    p = sub.add_parser("read", help="把截圖離線辨識成文字")
+    p.add_argument("session", help="session 目錄")
+    p.add_argument("--profile", default=None,
+                   help="不給就用截圖當下存在 meta.json 裡的那組設定")
+    p.add_argument("--no-clean", action="store_true",
+                   help="不要自動合併相鄰的重複與半句")
+    p.set_defaults(func=_cmd_read)
+
+    p = sub.add_parser("record", help="自動錄製（實驗中，偵測打字結束並不可靠）")
     p.add_argument("--profile", default="config/profile.json")
     p.add_argument("--out", default="sessions", help="session 存放根目錄")
     p.add_argument("--name", default=None, help="這次錄製的名稱，例如 ch1_school")
