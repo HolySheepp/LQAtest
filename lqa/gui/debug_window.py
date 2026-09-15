@@ -22,6 +22,16 @@ from .theme import palette_for
 
 log = get("gui.debug")
 
+# 旋鈕的欄位與中文名。順序就是畫面上由左到右的順序
+KNOB_LABELS = {
+    "bright_threshold": "低門檻",
+    "seed_threshold": "種子門檻",
+    "ocr_grow": "筆畫膨脹",
+    "upscale": "放大倍率",
+    "min_text_pixels": "最少文字量",
+    "color_tolerance": "容許色距",
+}
+
 METHODS = ["hysteresis", "value", "colorkey", "otsu", "adaptive", "bright"]
 METHOD_LABELS = {
     "hysteresis": "雙門檻遲滯（建議）",
@@ -31,6 +41,17 @@ METHOD_LABELS = {
     "adaptive": "區域自適應",
     "bright": "灰階亮度（不建議）",
 }
+
+
+def describe_changes(before: MaskConfig, after: MaskConfig) -> list[str]:
+    """列出哪幾個參數會變、從多少變成多少。
+
+    「恢復預設」按下去只有旋鈕會轉，使用者未必看得出動了哪幾個 ——
+    先講清楚，才不會以為它亂改一通。
+    """
+    return [f"{label} {getattr(before, key)} → {getattr(after, key)}"
+            for key, label in KNOB_LABELS.items()
+            if getattr(before, key) != getattr(after, key)]
 
 
 def to_pixmap(image: np.ndarray) -> QtGui.QPixmap:
@@ -330,26 +351,36 @@ class DebugWindow(QtWidgets.QWidget):
         調壞了要有路可以回頭，否則使用者只能自己記得原本的數字。
         ROI 不動 —— 那是框選的成果，和參數是兩回事。
         """
-        if QtWidgets.QMessageBox.question(
-            self, "恢復預設",
-            f"要把「{self.region_box.currentText()}」的取字參數還原成預設值嗎？"
-            "（框選範圍不會變動）",
-            QtWidgets.QMessageBox.StandardButton.Yes
-            | QtWidgets.QMessageBox.StandardButton.No
-        ) != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
-
         defaults = MaskConfig()
         if self.region == "speaker":
             # 發話者可能是白色也可能是淺藍，colorkey 模式兩色都要收
             defaults = replace(defaults,
                                text_colors=["#fefefe", "#5dbcfe"],
                                min_text_pixels=max(8, defaults.min_text_pixels // 4))
+
+        region_name = self.region_box.currentText()
+        changes = describe_changes(self._cfg(), defaults)
+        if not changes:
+            self.info.setText(f"「{region_name}」目前就是預設值，沒有東西要還原")
+            return
+
+        if QtWidgets.QMessageBox.question(
+            self, "恢復預設",
+            f"要把「{region_name}」的取字參數還原成預設值嗎？（框選範圍不會變動）"
+            + chr(10) + chr(10) + chr(10).join(changes),
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+        ) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
         self._set_cfg(defaults)
         self._sync_controls()
         self.render()
-        log.info("已還原 %s 的取字參數", self.region)
-        self.info.setText("已還原成預設值（尚未儲存）")
+        log.info("已還原 %s 的取字參數：%s", self.region, "、".join(changes))
+        # 一定要講「還沒存」—— 不按儲存設定就關掉，下次打開又是舊的數字，
+        # 看起來會像還原沒有生效
+        self.info.setText("已還原：" + "、".join(changes)
+                          + "。還沒寫進 profile，要按「儲存設定」才會留住")
 
     def _sync_controls(self) -> None:
         """把目前設定同步回旋鈕與下拉選單。"""
