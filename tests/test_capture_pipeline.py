@@ -16,7 +16,7 @@ cv2 = pytest.importorskip("cv2", reason="擷取管線需要 opencv")
 
 from lqa.config import MaskConfig, StabilityConfig  # noqa: E402
 from lqa.detect import textmask as tm
-from lqa.detect.stability import StabilityTracker
+from lqa.detect.linetracker import LineTracker
 
 W, H = 900, 160
 BOX_ALPHA = 0.55
@@ -255,19 +255,27 @@ class TestHexToBgr:
 
 
 class TestMaskSuppressesMovingBackground:
-    """這是整個設計的關鍵假設，如果不成立就得換做法。"""
+    """整個設計的關鍵假設：遮罩要濾掉會動的背景，只留文字。
 
-    def test_same_text_different_background_yields_near_identical_mask(self):
+    現在的逐句判準看的是「舊筆畫消失了多少」，所以這裡驗的也是消失量：
+    背景在動不該讓筆畫消失，換句才會。
+    """
+
+    @staticmethod
+    def _removed(before: np.ndarray, after: np.ndarray) -> int:
+        from lqa.detect.linetracker import _removed_pixels
+
+        return _removed_pixels(before, after)
+
+    def test_same_text_different_background_removes_almost_nothing(self):
         line = "Take it easy. Do your best."
-        masks = [
-            tm.build_mask(make_frame(line, phase=p), MASK_CFG)
-            for p in (0, 5, 11, 23)
-        ]
-        for later in masks[1:]:
-            diff = tm.mask_change_ratio(masks[0], later, MASK_CFG.min_text_pixels)
-            assert diff < StabilityConfig().diff_threshold, (
-                f"背景移動造成的遮罩差異 {diff:.4f} 超過門檻，"
-                "變動偵測會被背景誤觸發"
+        base = tm.build_mask(make_frame(line, phase=0), MASK_CFG)
+        limit = StabilityConfig().min_changed_pixels
+        for phase in (5, 11, 23, 57):
+            later = tm.build_mask(make_frame(line, phase=phase), MASK_CFG)
+            removed = self._removed(base, later)
+            assert removed < limit, (
+                f"背景移動造成 {removed} 個筆畫像素消失，會被誤判成換句"
             )
 
     def test_raw_pixel_diff_would_have_false_triggered(self):
@@ -278,110 +286,112 @@ class TestMaskSuppressesMovingBackground:
         raw_diff = float(np.count_nonzero(a != b)) / a.size
         assert raw_diff > 0.5, "測試用背景動得不夠，這個對照組沒有意義"
 
-    def test_text_change_does_move_the_mask(self):
+    def test_changing_the_line_removes_a_lot(self):
         before = tm.build_mask(make_frame("Take it easy."), MASK_CFG)
         after = tm.build_mask(make_frame("No matter how it turns out."), MASK_CFG)
-        diff = tm.mask_change_ratio(before, after, MASK_CFG.min_text_pixels)
-        assert diff > StabilityConfig().diff_threshold
+        removed = self._removed(before, after)
+        assert removed > tm.text_pixel_count(before) * StabilityConfig().line_change_ratio
 
-    def test_one_more_character_outweighs_background_noise(self):
-        """打一個字的變動量必須明顯大於背景雜訊，否則門檻無處可放。"""
+    def test_typing_one_more_character_removes_nothing(self):
+        """打字只會增加筆畫。這是逐句偵測成立的前提。"""
         line = "No matter how it turns out."
-        floor = MASK_CFG.min_text_pixels
-        full = tm.build_mask(make_frame(line, phase=0), MASK_CFG)
-        bg_noise = max(
-            tm.mask_change_ratio(full, tm.build_mask(make_frame(line, phase=p), MASK_CFG), floor)
-            for p in (5, 11, 23, 57)
-        )
-        # 用視窗（stable_frames 幀）的累積量比，這才是追蹤器實際採用的訊號
-        window = StabilityConfig().stable_frames
-        typing = tm.mask_change_ratio(
-            tm.build_mask(make_frame(line[:10], phase=10), MASK_CFG),
-            tm.build_mask(make_frame(line[: 10 + window], phase=10 + window), MASK_CFG),
-            floor,
-        )
-        assert typing > bg_noise * 3, f"分離度不足：背景 {bg_noise:.4f} vs 打字 {typing:.4f}"
-        assert bg_noise < StabilityConfig().diff_threshold < typing
+        before = tm.build_mask(make_frame(line[:10], phase=10), MASK_CFG)
+        after = tm.build_mask(make_frame(line[:11], phase=10), MASK_CFG)
+        assert self._removed(before, after) < StabilityConfig().min_changed_pixels
+        assert tm.text_pixel_count(after) > tm.text_pixel_count(before)
 
     def test_empty_box_has_almost_no_text_pixels(self):
         mask = tm.build_mask(make_frame("", phase=9), MASK_CFG)
         assert tm.text_pixel_count(mask) < MASK_CFG.min_text_pixels
 
 
-class TestTypewriterStability:
-    def _run(self, frames, cfg: StabilityConfig) -> list[int]:
-        """跑一遍追蹤器，回傳觸發擷取的幀索引。"""
-        tracker = StabilityTracker(cfg, MASK_CFG.min_text_pixels)
-        fired: list[int] = []
-        for idx, frame in enumerate(frames):
-            event = tracker.feed(
-                tm.build_mask(frame, MASK_CFG),
-                now_ms=idx * cfg.poll_interval_ms,
-            )
+
+class TestTypewriterLineDetection:
+    """打字機效果下的逐句偵測。
+
+    判準不是「等畫面靜止」，而是「打字只會增加筆畫、換句才會讓舊筆畫消失」。
+    舊做法要求連續數幀靜止，實測漏掉將近一半的句子，漏的幾乎都是短句。
+    """
+
+    def _events(self, frames, cfg: StabilityConfig | None = None):
+        cfg = cfg or StabilityConfig()
+        tracker = LineTracker(cfg, MASK_CFG.min_text_pixels)
+        out = []
+        for frame in frames:
+            event = tracker.feed(frame, tm.build_mask(frame, MASK_CFG))
             if event is not None:
-                fired.append(idx)
-        return fired
+                out.append(event)
+        final = tracker.flush()
+        if final is not None:
+            out.append(final)
+        return out
 
     @staticmethod
-    def _typing_then_idle(line: str, idle: int = 10) -> list[np.ndarray]:
-        """逐字打字，打完後背景繼續動但文字靜止。"""
-        frames = [make_frame(line[:n], phase=n) for n in range(1, len(line) + 1)]
-        frames += [make_frame(line, phase=100 + p) for p in range(idle)]
-        return frames
-
-    def test_fires_once_after_typing_completes(self):
-        line = "No matter how it turns out."
-        cfg = StabilityConfig(min_gap_ms=0)
-        fired = self._run(self._typing_then_idle(line), cfg)
-        assert len(fired) == 1, f"應該只觸發一次，實際觸發於 {fired}"
-        assert fired[0] >= len(line), "不該在文字打完之前就觸發"
-
-    def test_never_fires_while_still_typing(self):
-        """回歸測試。
-
-        舊版門檻用 ROI 面積正規化又只比對前一幀，打字中每一幀都被判定成
-        穩定，結果會在打到第三個字時就擷取，錄到的全是半句話。
-        """
-        line = "No matter how it turns out."
-        cfg = StabilityConfig(min_gap_ms=0)
-        typing_only = [make_frame(line[:n], phase=n) for n in range(1, len(line) + 1)]
-        assert self._run(typing_only, cfg) == [], "打字過程中不該觸發任何擷取"
+    def _typing(line: str, phase_base: int = 0) -> list[np.ndarray]:
+        return [make_frame(line[:n], phase=phase_base + n)
+                for n in range(1, len(line) + 1)]
 
     def test_captures_the_complete_sentence(self):
         line = "No matter how it turns out."
-        cfg = StabilityConfig(min_gap_ms=0)
-        frames = self._typing_then_idle(line)
-
-        tracker = StabilityTracker(cfg, MASK_CFG.min_text_pixels)
-        captured = None
-        for idx, frame in enumerate(frames):
-            event = tracker.feed(tm.build_mask(frame, MASK_CFG), idx * cfg.poll_interval_ms)
-            if event is not None:
-                captured = frames[idx]
-        assert captured is not None
-        # 擷取到的那一幀必須是完整句子，不能是打到一半
+        events = self._events(self._typing(line))
+        assert len(events) == 1
         full = tm.build_mask(make_frame(line, phase=0), MASK_CFG)
-        diff = tm.mask_change_ratio(
-            full, tm.build_mask(captured, MASK_CFG), MASK_CFG.min_text_pixels
-        )
-        assert diff < cfg.diff_threshold
+        captured = tm.build_mask(events[0].frame, MASK_CFG)
+        # 保留下來的必須是打完的那一幀，不能是打到一半
+        assert tm.text_pixel_count(captured) >= tm.text_pixel_count(full) * 0.95
 
-    def test_two_sentences_fire_twice(self):
-        cfg = StabilityConfig(min_gap_ms=0)
-        frames = [make_frame("Take it easy.", phase=p) for p in range(10)]
-        frames += [make_frame("", phase=p) for p in range(10, 16)]
-        frames += [make_frame("Do your best.", phase=p) for p in range(16, 26)]
-        assert len(self._run(frames, cfg)) == 2
+    def test_no_idle_period_is_needed(self):
+        """回歸測試：短句打完立刻換下一句，中間沒有任何靜止期。
 
-    def test_repeated_identical_line_after_blank_is_captured_twice(self):
-        """同一句連續出現兩次時，只要中間經過空白畫面就不會被當成重複。"""
-        cfg = StabilityConfig(min_gap_ms=0)
+        舊做法要求連續 4 幀靜止，這種情況整句都會漏掉。
+        """
+        frames = self._typing("Found it.") + self._typing("It was nothing.", 50)
+        events = self._events(frames)
+        assert len(events) == 2
+
+    def test_a_pause_mid_typing_does_not_split_the_line(self):
+        """刪節號會讓打字機停頓，舊做法會把停頓誤判成打完而錄到半句。"""
+        line = "Though... thanks for helping me through all this."
+        frames = self._typing(line[:8])            # "Though.."
+        frames += [make_frame(line[:8], phase=200 + p) for p in range(8)]   # 停頓
+        frames += [make_frame(line[:n], phase=n) for n in range(9, len(line) + 1)]
+        events = self._events(frames)
+        assert len(events) == 1
+        captured = tm.text_pixel_count(tm.build_mask(events[0].frame, MASK_CFG))
+        partial = tm.text_pixel_count(tm.build_mask(make_frame(line[:8]), MASK_CFG))
+        assert captured > partial * 2, "應該保留完整句，不是停頓當下的半句"
+
+    def test_moving_background_does_not_split_the_line(self):
+        line = "Take it easy."
+        frames = [make_frame(line, phase=p) for p in range(20)]
+        assert len(self._events(frames)) == 1
+
+    def test_two_sentences_separated_by_a_blank_box(self):
+        frames = [make_frame("Take it easy.", phase=p) for p in range(6)]
+        frames += [make_frame("", phase=p) for p in range(6, 10)]
+        frames += [make_frame("Do your best.", phase=p) for p in range(10, 16)]
+        assert len(self._events(frames)) == 2
+
+    def test_repeated_identical_line_after_blank_is_reported_twice(self):
         line = "Nev..."
-        frames = [make_frame(line, phase=p) for p in range(10)]
-        frames += [make_frame("", phase=p) for p in range(10, 16)]
-        frames += [make_frame(line, phase=p) for p in range(16, 26)]
-        assert len(self._run(frames, cfg)) == 2
+        frames = [make_frame(line, phase=p) for p in range(6)]
+        frames += [make_frame("", phase=p) for p in range(6, 10)]
+        frames += [make_frame(line, phase=p) for p in range(10, 16)]
+        events = self._events(frames)
+        assert len(events) == 2
+        assert all(e.blanked_before for e in events)
 
+    def test_flush_is_required_for_the_last_line(self):
+        """最後一句沒有下一句可以觸發，不 flush 就會遺失。"""
+        tracker = LineTracker(StabilityConfig(), MASK_CFG.min_text_pixels)
+        for frame in self._typing("It was nothing."):
+            assert tracker.feed(frame, tm.build_mask(frame, MASK_CFG)) is None
+        assert tracker.flush() is not None
+
+    def test_sample_count_is_reported(self):
+        """取樣次數太少代表可能沒抓到顯示完整的那一刻，要能回報。"""
+        events = self._events(self._typing("Found it."))
+        assert events[0].samples == len("Found it.")
 
 class TestOcrOnSyntheticFrame:
     """真的跑一次 OCR，確認二值化遮罩餵給 OCR 讀得出來。"""

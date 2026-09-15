@@ -1,12 +1,11 @@
 """同一句被重複擷取的防護。
 
-實測發現的機制：變動比例的分母是文字像素量，短句的遮罩只有一千多像素，
-光是抗鋸齒邊緣抖動就會讓比例衝到 3% 以上，逼近 0.04 的門檻，
-於是被誤判成「畫面變了」而重新觸發，同一句記錄兩次。
+換句的判準是「舊筆畫消失了多少」，而消失量的比例分母是文字像素量，
+短句的遮罩只有一千多像素，抗鋸齒抖動就可能讓比例衝過門檻。
 （實測資料：含頭像的左半 8102 px 變動 0.0014，純文字的右半 1029 px 變動 0.0327。）
 
 兩層防護：
-  1. 變動要同時滿足比例與絕對像素量，擋掉小分母造成的假變動
+  1. 消失量要同時滿足比例與絕對像素量，擋掉小分母造成的假換句
   2. 擷取後比對 OCR 文字，字一樣就是同一句
 中間若對白框淨空過，代表劇情真的又講了一次，那種重複要保留。
 """
@@ -21,74 +20,70 @@ import pytest
 
 from lqa.capture.base import CaptureBackend
 from lqa.config import MaskConfig, OcrConfig, Profile, StabilityConfig
-from lqa.detect.stability import StabilityTracker
+from lqa.detect.linetracker import LineTracker
 from lqa.ocr.base import OcrEngine, OcrResult
 
 CFG = MaskConfig(method="value", bright_threshold=170, min_text_pixels=40, upscale=1)
 
 
-def mask_with(pixels: int, noise: int = 0, seed: int = 0) -> np.ndarray:
-    """做一張含指定前景量的遮罩，noise 指定要翻轉幾個邊緣像素。"""
+def mask_with(pixels: int, offset: int = 0) -> np.ndarray:
+    """做一張含指定前景量的遮罩。offset 讓前景落在不同位置，模擬換成另一句。"""
     mask = np.zeros((100, 400), np.uint8)
     flat = mask.reshape(-1)
-    flat[:pixels] = 255
-    if noise:
-        rng = np.random.default_rng(seed)
-        idx = rng.choice(np.arange(pixels, pixels + 4000), size=noise, replace=False)
-        flat[idx] = 255
+    flat[offset:offset + pixels] = 255
     return mask
 
 
-class TestSmallMaskNoise:
-    """短句的遮罩很小，比例會被放大。"""
+class TestFlickerDoesNotSplitLines:
+    """短句的遮罩很小，抗鋸齒抖動很容易被誤判成換句。
 
-    def feed_all(self, tracker, masks):
-        fired = 0
-        for i, m in enumerate(masks):
-            if tracker.feed(m, i * 100.0) is not None:
-                fired += 1
-        return fired
+    實測資料：含頭像的左半 8102 像素只變動 0.0014，
+    純文字的右半 1029 像素卻變動到 0.0327。
+    現在的判準看的是「舊筆畫消失了多少」，並且比例與絕對量要同時達標。
+    """
 
-    # 短句：600 像素的遮罩，抖動 30 像素 -> 比例 5% 已超過 0.04 門檻，
-    # 但絕對量只有 30。真實資料裡純文字區只有 1029 像素，就是這個量級。
     SHORT_LINE = 600
     FLICKER = 30
 
-    def frames(self):
+    def feed_all(self, tracker, masks):
+        frame = np.zeros((10, 10, 3), np.uint8)
+        events = [tracker.feed(frame, m) for m in masks]
+        events = [e for e in events if e is not None]
+        final = tracker.flush()
+        if final is not None:
+            events.append(final)
+        return len(events)
+
+    def test_edge_flicker_on_a_short_line_does_not_split(self):
+        cfg = StabilityConfig(min_changed_pixels=40)
+        tracker = LineTracker(cfg, CFG.min_text_pixels)
         base = mask_with(self.SHORT_LINE)
-        shifted = mask_with(self.SHORT_LINE, noise=self.FLICKER, seed=1)
-        return [base] * 4 + [shifted] * 8      # 抖動後停在新的穩定狀態
+        shifted = mask_with(self.SHORT_LINE - self.FLICKER)   # 少了 30 個像素
+        assert self.feed_all(tracker, [base] * 4 + [shifted] * 4) == 1
 
-    def test_edge_flicker_on_a_short_line_does_not_retrigger(self):
-        cfg = StabilityConfig(stable_frames=2, min_gap_ms=0, min_changed_pixels=40)
-        tracker = StabilityTracker(cfg, CFG.min_text_pixels)
-        assert self.feed_all(tracker, self.frames()) == 1
+    def test_absolute_floor_is_what_saves_it(self):
+        """對照組：沒有絕對量下限的話，30 像素就超過 25% 比例以外的保護。"""
+        cfg = StabilityConfig(min_changed_pixels=1, line_change_ratio=0.02)
+        tracker = LineTracker(cfg, CFG.min_text_pixels)
+        base = mask_with(self.SHORT_LINE)
+        shifted = mask_with(self.SHORT_LINE - self.FLICKER)
+        assert self.feed_all(tracker, [base] * 4 + [shifted] * 4) == 2
 
-    def test_ratio_alone_would_have_retriggered(self):
-        """對照組：沒有絕對量下限的話，同樣的抖動就會記錄第二次。"""
-        cfg = StabilityConfig(stable_frames=2, min_gap_ms=0, min_changed_pixels=1)
-        tracker = StabilityTracker(cfg, CFG.min_text_pixels)
-        assert self.feed_all(tracker, self.frames()) == 2
-
-    def test_a_real_new_line_still_fires(self):
-        cfg = StabilityConfig(stable_frames=2, min_gap_ms=0, min_changed_pixels=40)
-        tracker = StabilityTracker(cfg, CFG.min_text_pixels)
-        frames = [mask_with(self.SHORT_LINE)] * 4 + [mask_with(2500)] * 4
+    def test_a_real_new_line_still_splits(self):
+        cfg = StabilityConfig(min_changed_pixels=40)
+        tracker = LineTracker(cfg, CFG.min_text_pixels)
+        frames = [mask_with(self.SHORT_LINE)] * 4 + [mask_with(2500, offset=4000)] * 4
         assert self.feed_all(tracker, frames) == 2
 
     def test_blank_state_is_reported_on_the_event(self):
-        """旗標在觸發當下就會清掉，所以必須隨事件傳遞。"""
-        cfg = StabilityConfig(stable_frames=2, min_gap_ms=0, min_changed_pixels=40)
-        tracker = StabilityTracker(cfg, CFG.min_text_pixels)
-        events = []
-        frames = ([mask_with(2000)] * 4 + [mask_with(0)] * 4 + [mask_with(2000)] * 4)
-        for i, m in enumerate(frames):
-            event = tracker.feed(m, i * 100.0)
-            if event is not None:
-                events.append(event)
+        cfg = StabilityConfig(min_changed_pixels=40)
+        tracker = LineTracker(cfg, CFG.min_text_pixels)
+        frame = np.zeros((10, 10, 3), np.uint8)
+        masks = [mask_with(2000)] * 3 + [mask_with(0)] * 3 + [mask_with(2000)] * 3
+        events = [e for e in (tracker.feed(frame, m) for m in masks) if e is not None]
+        events.append(tracker.flush())
         assert len(events) == 2
-        assert events[0].blanked_before is True      # 錄製開始前視同空白
-        assert events[1].blanked_before is True      # 中間確實淨空過
+        assert all(e.blanked_before for e in events)
 
 
 class FakeCapture(CaptureBackend):
@@ -116,10 +111,11 @@ class ScriptedEngine(OcrEngine):
         return OcrResult(text=self.texts.get(key, "unknown"), confidence=0.99)
 
 
-def frame_with(pixels: int) -> np.ndarray:
+def frame_with(pixels: int, offset: int = 0) -> np.ndarray:
+    """offset 讓亮區落在不同位置，這樣前後兩幀才會被判定成換了一句。"""
     frame = np.zeros((100, 400, 3), np.uint8)
     flat = frame.reshape(-1, 3)
-    flat[:pixels] = (254, 254, 254)
+    flat[offset:offset + pixels] = (254, 254, 254)
     return frame
 
 
@@ -128,8 +124,7 @@ def profile():
     return Profile(
         name="t", window_title=None, capture_region=(0, 0, 400, 100),
         body_roi=(0, 0, 400, 100), mask=CFG,
-        stability=StabilityConfig(poll_interval_ms=1, stable_frames=2,
-                                  min_gap_ms=0, min_changed_pixels=40),
+        stability=StabilityConfig(poll_interval_ms=1, min_changed_pixels=40),
         ocr=OcrConfig(source="mask"),
     )
 
@@ -172,14 +167,14 @@ class TestTextLevelDedup:
 
     def test_same_text_twice_is_recorded_once(self, profile, tmp_path):
         """遮罩因為抖動而被判成新畫面，但 OCR 讀到的是同一句。"""
-        big, bigger = frame_with(3000), frame_with(6000)
+        big, bigger = frame_with(3000), frame_with(3000, offset=5000)
         frames = [big] * 5 + [bigger] * 5
         store, recorder = self._record(profile, tmp_path, frames,
                                        ["Same line", "Same line"])
         assert store.count == 1
 
     def test_different_text_is_recorded_twice(self, profile, tmp_path):
-        big, bigger = frame_with(3000), frame_with(6000)
+        big, bigger = frame_with(3000), frame_with(3000, offset=5000)
         frames = [big] * 5 + [bigger] * 5
         store, _ = self._record(profile, tmp_path, frames,
                                 ["First line", "Second line"])
@@ -196,7 +191,7 @@ class TestTextLevelDedup:
 
     def test_near_identical_text_counts_as_repeat(self, profile, tmp_path):
         """OCR 有雜訊，差一兩個標點仍算同一句。"""
-        big, bigger = frame_with(3000), frame_with(6000)
+        big, bigger = frame_with(3000), frame_with(3000, offset=5000)
         frames = [big] * 5 + [bigger] * 5
         store, _ = self._record(profile, tmp_path, frames,
                                 ["Take it easy.", "Take it easy"])

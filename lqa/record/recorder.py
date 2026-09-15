@@ -20,7 +20,7 @@ from ..compare.normalize import similarity
 from ..capture.mss_backend import open_capture
 from ..config import MaskConfig, Profile
 from ..detect import textmask as tm
-from ..detect.stability import StabilityTracker
+from ..detect.linetracker import LineEvent, LineTracker
 from ..model import CapturedLine
 from ..ocr.base import OcrEngine, OcrResult, build_engine
 from .store import SessionStore
@@ -69,7 +69,7 @@ class Recorder:
         self._capture = capture or open_capture(
             profile.window_title, profile.capture_region, profile.capture_backend
         )
-        self._tracker = StabilityTracker(profile.stability, profile.mask.min_text_pixels)
+        self._tracker = LineTracker(profile.stability, profile.mask.min_text_pixels)
         self._seq = 0
         self._last_warning: Optional[str] = None
         self.repeat_threshold = repeat_threshold
@@ -96,10 +96,11 @@ class Recorder:
         self._repeats += 1
         return True
 
-    def _capture_line(self, frame: np.ndarray, stable_ms: int) -> CapturedLine:
+    def _capture_line(self, event: LineEvent) -> CapturedLine:
         p = self.profile
+        frame = event.frame
         body_img = tm.crop(frame, p.body_roi)
-        body_mask = tm.build_mask(body_img, p.mask)
+        body_mask = event.mask
         body = self._read(body_img, body_mask, p.mask)
 
         speaker_text = ""
@@ -117,7 +118,8 @@ class Recorder:
             body_text=body.text,
             speaker_text=speaker_text,
             body_conf=body.confidence,
-            stable_ms=stable_ms,
+            samples=event.samples,
+            still_growing=event.grew_until_end,
             touches_bottom=bottom,
             touches_right=right,
         )
@@ -172,24 +174,31 @@ class Recorder:
 
                 body_img = tm.crop(frame, p.body_roi)
                 mask = tm.build_mask(body_img, p.mask)
-
-                event = self._tracker.feed(mask, time.time() * 1000.0)
-                if event is not None:
-                    line = self._capture_line(frame, event.stable_ms)
-                    if line.body_text.strip() and not self._is_repeat(line, event.blanked_before):
-                        self.store.append(line)
-                        self._seq += 1
-                        self._last_text = line.body_text
-                        if self.on_line:
-                            self.on_line(line)
+                self._emit(self._tracker.feed(frame, mask))
 
                 elapsed = time.perf_counter() - loop_start
                 time.sleep(max(0.0, interval - elapsed))
         except KeyboardInterrupt:
             pass
         finally:
+            # 最後一句還壓在追蹤器裡等下一句，沒有 flush 就會遺失
+            self._emit(self._tracker.flush())
             self._capture.close()
 
         if self._repeats:
             print(f"（已略過 {self._repeats} 次重複觸發）")
         return self._seq
+
+    def _emit(self, event: Optional[LineEvent]) -> None:
+        if event is None:
+            return
+        line = self._capture_line(event)
+        if not line.body_text.strip():
+            return
+        if self._is_repeat(line, event.blanked_before):
+            return
+        self.store.append(line)
+        self._seq += 1
+        self._last_text = line.body_text
+        if self.on_line:
+            self.on_line(line)

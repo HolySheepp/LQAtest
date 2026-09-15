@@ -14,6 +14,19 @@ from typing import Any, Optional
 Rect = tuple[int, int, int, int]
 
 
+def _build(cls, data: Any):
+    """從 dict 建立設定物件，忽略認不得的欄位。
+
+    參數會隨著演算法調整而增減，舊的 profile.json 裡留著已經移除的鍵
+    是常態。直接 **data 會丟 TypeError，讓使用者的 profile 突然打不開，
+    所以這裡只取目前還存在的欄位。
+    """
+    if not data:
+        return cls()
+    known = set(cls.__dataclass_fields__)
+    return cls(**{k: v for k, v in data.items() if k in known})
+
+
 @dataclass
 class MaskConfig:
     """文字遮罩抽取設定。
@@ -64,21 +77,22 @@ class MaskConfig:
 
 @dataclass
 class StabilityConfig:
-    """打字機效果處理：等文字不再變動才擷取。
+    """逐句偵測設定。判準見 detect/linetracker.py。
 
-    兩個門檻都是「變動像素 / 文字像素量」的比例，不是佔 ROI 面積的比例，
-    所以換解析度或改對白框大小都不需要重調。理由見 detect/stability.py。
+    核心是「打字只會增加筆畫、換句才會讓舊筆畫消失」，
+    所以不需要等畫面靜止，也就沒有靜止時間長短的門檻。
     """
 
-    poll_interval_ms: int = 80
-    diff_threshold: float = 0.04    # 視窗內（現在 vs stable_frames 幀前）的容許變動量
-    stable_frames: int = 4          # 視窗長度：連續幾幀都沒變才算穩定
-    min_gap_ms: int = 200           # 兩次擷取之間的最小間隔
-    rearm_threshold: float = 0.04   # 單幀變動量超過此值才重新進入「等待穩定」狀態
-    # 變動像素的絕對下限。比例的分母是文字量，短句的遮罩只有一千多像素，
+    poll_interval_ms: int = 60
+    # 舊筆畫消失多少比例才算換了一句。打字中的消失量只有抗鋸齒抖動，
+    # 換句時整句會被換掉，所以這個值可以放得很寬鬆。
+    line_change_ratio: float = 0.25
+    # 消失像素的絕對下限。比例的分母是文字量，短句的遮罩只有一千多像素，
     # 抗鋸齒邊緣抖個三十幾像素就會衝到 3%，句子越短越誇張。
-    # 所以比例與絕對量要同時達標才算真的變了。
+    # 所以比例與絕對量要同時達標才算真的換句。
     min_changed_pixels: int = 40
+    # 一句被取樣少於這個次數就標記出來：可能沒抓到它顯示完整的那一刻
+    min_samples_warn: int = 2
 
 
 @dataclass
@@ -131,7 +145,7 @@ class Profile:
         def rect(value: Any) -> Optional[Rect]:
             return tuple(int(v) for v in value) if value else None  # type: ignore[return-value]
 
-        mask = MaskConfig(**data.get("mask", {}))
+        mask = _build(MaskConfig, data.get("mask"))
         speaker_mask_raw = data.get("speaker_mask")
         return cls(
             name=data.get("name", "default"),
@@ -141,9 +155,9 @@ class Profile:
             body_roi=rect(data.get("body_roi")),
             speaker_roi=rect(data.get("speaker_roi")),
             mask=mask,
-            speaker_mask=MaskConfig(**speaker_mask_raw) if speaker_mask_raw else None,
-            stability=StabilityConfig(**data.get("stability", {})),
-            ocr=OcrConfig(**data.get("ocr", {})),
+            speaker_mask=_build(MaskConfig, speaker_mask_raw) if speaker_mask_raw else None,
+            stability=_build(StabilityConfig, data.get("stability")),
+            ocr=_build(OcrConfig, data.get("ocr")),
         )
 
     def save(self, path: str | Path) -> Path:

@@ -55,7 +55,7 @@ def profile():
         capture_region=(0, 0, 200, 100),
         body_roi=(0, 0, 200, 100),
         mask=MaskConfig(method="value", min_text_pixels=10, upscale=1),
-        stability=StabilityConfig(poll_interval_ms=1, stable_frames=2, min_gap_ms=0),
+        stability=StabilityConfig(poll_interval_ms=1),
         ocr=OcrConfig(),
     )
 

@@ -325,11 +325,24 @@ def _cmd_show_session(args: argparse.Namespace) -> int:
             body = body[: width - 3] + "..."
         speaker = strip_speaker_id(line.speaker_text)
         prefix = f"[{speaker}] " if speaker else ""
-        flag = " <中文>" if has_cjk(line.body_text) else ""
+        flags = []
+        if has_cjk(line.body_text):
+            flags.append("中文")
+        if line.still_growing:
+            flags.append("可能沒顯示完")
+        if 0 < line.samples <= 2:
+            flags.append(f"只取樣{line.samples}次")
+        flag = f"  <{' / '.join(flags)}>" if flags else ""
         print(f"{line.seq + 1:>4}. {prefix}{body}{flag}")
         if args.verbose:
-            print(f"      信心值 {line.body_conf:.3f}  穩定 {line.stable_ms}ms  "
+            print(f"      信心值 {line.body_conf:.3f}  取樣 {line.samples} 次  "
                   f"截圖 {line.screenshot}")
+
+    risky = [c for c in lines if c.still_growing or (0 < c.samples <= 2)]
+    if risky:
+        print("")
+        print(f"提醒：{len(risky)} 句在換到下一句時文字還在增加，或取樣次數過少，")
+        print("      可能沒抓到它顯示完整的樣子。點慢一點可以改善。")
     return 0
 
 

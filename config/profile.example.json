@@ -46,11 +46,10 @@
     "ocr_grow": 2
   },
   "stability": {
-    "poll_interval_ms": 80,
-    "diff_threshold": 0.04,
-    "stable_frames": 4,
-    "min_gap_ms": 200,
-    "rearm_threshold": 0.04
+    "poll_interval_ms": 60,
+    "line_change_ratio": 0.25,
+    "min_changed_pixels": 40,
+    "min_samples_warn": 2
   },
   "ocr": {
     "engine": "rapidocr",

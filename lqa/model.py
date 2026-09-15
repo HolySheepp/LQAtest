@@ -69,7 +69,9 @@ class CapturedLine:
     speaker_text: str = ""     # 姓名框 OCR 結果
     screenshot: str = ""       # 截圖相對路徑
     body_conf: float = 0.0     # OCR 平均信心值
-    stable_ms: int = 0         # 穩定多久後才擷取
+    stable_ms: int = 0         # 保留欄位，舊 session 相容用
+    samples: int = 0           # 這句被取樣幾次。太少代表可能沒抓到完整狀態
+    still_growing: bool = False  # 直到換句前文字都還在增加，八成沒顯示完
     touches_bottom: bool = False   # 文字 bbox 是否貼齊對白框下緣（超框輔助訊號）
     touches_right: bool = False    # 文字 bbox 是否貼齊對白框右緣
 
