@@ -17,6 +17,12 @@ from .config import Profile
 from .model import CATEGORY_LABEL_ZH, Category
 
 
+def _cmd_gui(_args: argparse.Namespace) -> int:
+    from .gui.app import main as gui_main
+
+    return gui_main([])
+
+
 def _cmd_windows(args: argparse.Namespace) -> int:
     from .capture.window import list_windows
 
@@ -192,10 +198,6 @@ def _cmd_start(_args: argparse.Namespace) -> int:
     sessions = sorted(
         (p for p in sessions_dir.iterdir() if p.is_dir()), reverse=True
     ) if sessions_dir.is_dir() else []
-    latest = sessions[0] if sessions else None
-    shots = len(session_shots(latest)) if latest else 0
-    read_done = bool(latest and (latest / "lines.jsonl").exists())
-
     # 只認手動截圖的 session；舊的自動錄製沒有 shots，流程不同
     manual = [s for s in sessions if session_shots(s)]
     latest = manual[0] if manual else None
@@ -568,6 +570,9 @@ def _cmd_check_script(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lqa", description="遊戲在地化品質檢查工具")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("gui", help="開啟圖形介面")
+    p.set_defaults(func=_cmd_gui)
 
     p = sub.add_parser("start", help="檢查目前進度，並指出下一步該做什麼")
     p.set_defaults(func=_cmd_start)

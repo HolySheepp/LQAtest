@@ -27,7 +27,7 @@ from ..model import CapturedLine
 from ..ocr.base import OcrEngine, engine_for
 from ..priority import low_priority
 from .recorder import _ocr_input
-from .store import SessionStore, session_profile, session_shots
+from .store import SessionStore, session_meta, session_profile, session_shots
 
 ProgressCallback = Callable[[int, int, CapturedLine], None]
 
@@ -96,6 +96,10 @@ def read_session(
     if not shots:
         raise FileNotFoundError(f"{session} 裡沒有任何截圖（shots/*.png）")
 
+    # 綁定模式的檔名就是條目索引，辨識完直接帶著對應關係，比對不必再對齊
+    meta = session_meta(session) or {}
+    bound = meta.get("mode") == "bound"
+
     if profile is None:
         stored = session_profile(session)
         if stored is None:
@@ -116,6 +120,7 @@ def read_session(
             body, speaker, confidence, bottom, right = _read_regions(frame, profile, engine)
             line = CapturedLine(
                 seq=index,
+                expected_index=int(path.stem) if bound else -1,
                 timestamp=path.stat().st_mtime,
                 body_text=body,
                 speaker_text=speaker,
@@ -129,7 +134,8 @@ def read_session(
                 on_progress(index + 1, len(shots), line)
 
     duplicates = partials = 0
-    if do_clean:
+    # 綁定模式每張圖已經是一條，合併相鄰重複反而會弄丟正確答案
+    if do_clean and not bound:
         lines, duplicates, partials = clean(lines)
     if duplicates or partials:
         print(f"  清理：合併重複 {duplicates} 張、半句 {partials} 張")

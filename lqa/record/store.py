@@ -100,12 +100,17 @@ def session_shots(session_dir: str | Path) -> list[Path]:
     return sorted(Path(session_dir).glob("shots/*.png"))
 
 
-def session_profile(session_dir: str | Path) -> dict[str, Any] | None:
-    """錄製當下用的 profile。離線辨識要用同一組 ROI 與遮罩參數。"""
+def session_meta(session_dir: str | Path) -> dict[str, Any] | None:
     meta = Path(session_dir) / "meta.json"
     if not meta.exists():
         return None
-    return json.loads(meta.read_text(encoding="utf-8")).get("profile")
+    return json.loads(meta.read_text(encoding="utf-8"))
+
+
+def session_profile(session_dir: str | Path) -> dict[str, Any] | None:
+    """錄製當下用的 profile。離線辨識要用同一組 ROI 與遮罩參數。"""
+    meta = session_meta(session_dir)
+    return meta.get("profile") if meta else None
 
 
 def iter_session(session_dir: str | Path) -> Iterator[CapturedLine]:

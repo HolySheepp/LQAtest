@@ -16,7 +16,7 @@ from typing import Sequence
 
 from ..model import CapturedLine, Category, ExpectedLine, Issue
 from . import normalize as nz
-from .align import AlignConfig, align
+from .align import AlignConfig, AlignPair, align
 
 
 @dataclass
@@ -115,6 +115,26 @@ def _guess_untranslated_source(
     return (best, best_score) if best_score >= 0.7 else (None, best_score)
 
 
+def _bound_pairs(
+    expected: Sequence[ExpectedLine], captured: Sequence[CapturedLine]
+) -> list[AlignPair]:
+    """截圖已經綁定條目時，直接逐條配對，不做對齊。
+
+    介面版拍攝時游標就決定了每張截圖對應哪一條，位置是已知的。
+    硬要再跑一次模糊對齊只會引入不必要的誤差。
+    """
+    by_index = {c.expected_index: c for c in captured if 0 <= c.expected_index}
+    pairs: list[AlignPair] = []
+    for index in range(len(expected)):
+        cap = by_index.get(index)
+        pairs.append(AlignPair(index, captured.index(cap) if cap else None))
+    # 綁到範圍外的截圖（例如文本後來被改短）仍要報出來
+    for position, cap in enumerate(captured):
+        if cap.expected_index >= len(expected):
+            pairs.append(AlignPair(None, position))
+    return pairs
+
+
 def compare(
     expected: Sequence[ExpectedLine],
     captured: Sequence[CapturedLine],
@@ -129,12 +149,16 @@ def compare(
     # 這種情況下逐句報「未讀到發話者」只會製造滿江紅，直接關掉這項檢查。
     speaker_enabled = any(c.speaker_text.strip() for c in captured)
 
-    pairs, reordered = align(
-        [e.target_en for e in expected],
-        [c.body_text for c in captured],
-        nz.similarity,
-        cfg.align,
-    )
+    # 截圖已綁定條目時直接逐條配對；自由拍攝模式才需要序列對齊
+    if captured and all(c.expected_index >= 0 for c in captured):
+        pairs, reordered = _bound_pairs(expected, captured), set()
+    else:
+        pairs, reordered = align(
+            [e.target_en for e in expected],
+            [c.body_text for c in captured],
+            nz.similarity,
+            cfg.align,
+        )
 
     issues: list[Issue] = []
     for pair in pairs:
@@ -182,7 +206,9 @@ def compare(
             continue
 
         assert exp is not None and cap is not None
-        score = pair.score
+        # 重算而不是沿用 pair.score：綁定模式的配對沒有經過對齊，
+        # 沿用的話相似度會永遠是 0
+        score = nz.similarity(exp.target_en, cap.body_text)
         base = Issue(
             expected=exp,
             captured=cap,

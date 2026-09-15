@@ -65,6 +65,9 @@ class CapturedLine:
 
     seq: int                   # 擷取順序，從 0 開始
     timestamp: float           # epoch 秒
+    # 這張截圖對應翻譯文本的第幾條。介面版拍攝時游標已經綁死了對應關係，
+    # 所以比對不必靠序列對齊猜。-1 代表未綁定（命令列的自由拍攝模式）。
+    expected_index: int = -1
     body_text: str = ""        # 對白框 OCR 結果
     speaker_text: str = ""     # 姓名框 OCR 結果
     screenshot: str = ""       # 截圖相對路徑
