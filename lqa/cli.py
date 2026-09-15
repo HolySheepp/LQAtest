@@ -13,7 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import Profile
+from .config import REGION_SPECS, Profile
 from .model import CATEGORY_LABEL_ZH, Category
 
 
@@ -180,9 +180,9 @@ def _cmd_start(_args: argparse.Namespace) -> int:
     if profile_path.exists():
         try:
             profile = Profile.load(profile_path)
-            speaker = profile.speaker_roi or "未設定"
             print(f"[v] 校準設定    {profile_path}")
-            print(f"                對白框 {profile.body_roi}  姓名框 {speaker}")
+            for key, label, _roi_attr, _mask_attr in REGION_SPECS:
+                print(f"                {label} {profile.roi_of(key) or '未設定'}")
             print(f"                取字方式 {profile.mask.method}")
         except (OSError, ValueError) as exc:
             print(f"[!] 校準設定    讀取失敗：{exc}")

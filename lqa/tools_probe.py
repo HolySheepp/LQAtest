@@ -45,6 +45,8 @@ def _draw_rois(cv2, frame: np.ndarray, profile: Profile) -> np.ndarray:
     boxes = (
         ("body", profile.body_roi, (0, 220, 0)),
         ("speaker", profile.speaker_roi, (255, 160, 0)),
+        ("npc_body", profile.npc_body_roi, (0, 160, 255)),
+        ("npc_speaker", profile.npc_speaker_roi, (200, 80, 255)),
     )
     for label, roi, color in boxes:
         if not roi:
@@ -315,7 +317,7 @@ def run_probe(
     else:
         capture = open_capture(
             profile.window_title, profile.capture_region, profile.capture_backend,
-            roi=profile.body_roi,
+            roi=profile.watch_roi(),
         )
         kind = type(capture).__name__
         note = {

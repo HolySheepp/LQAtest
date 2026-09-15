@@ -127,6 +127,41 @@ class OcrConfig:
     screenshot_quality: int = 85
 
 
+# 四種可以框選的範圍。遊戲有兩種對白版面 —— 一般劇情對白，以及 NPC 對白，
+# 兩者的框在畫面上位置不同，所以各自要框、各自可以有自己的取字參數。
+# 欄位是 (代號, 中文名, ROI 欄位, 取字參數欄位)。
+REGION_SPECS: list[tuple[str, str, str, str]] = [
+    ("body", "一般對白框", "body_roi", "mask"),
+    ("speaker", "一般姓名框", "speaker_roi", "speaker_mask"),
+    ("npc_body", "NPC對白框", "npc_body_roi", "npc_mask"),
+    ("npc_speaker", "NPC姓名框", "npc_speaker_roi", "npc_speaker_mask"),
+]
+
+REGION_LABELS = {key: label for key, label, _roi, _mask in REGION_SPECS}
+REGION_KEYS = [key for key, *_rest in REGION_SPECS]
+
+# 取字參數沒設定時往哪裡退。NPC 的框通常和一般對白長得一樣，
+# 沒特別調過就沿用一般的，不必每個都重調一次。
+MASK_FALLBACK = {
+    "body": [],
+    "speaker": ["mask"],
+    "npc_body": ["mask"],
+    "npc_speaker": ["speaker_mask", "mask"],
+}
+
+
+@dataclass(frozen=True)
+class RegionSet:
+    """一套對白版面：對白框加姓名框，各自的範圍與取字參數。"""
+
+    key: str
+    label: str
+    body_roi: Optional[Rect]
+    speaker_roi: Optional[Rect]
+    body_mask: MaskConfig
+    speaker_mask: MaskConfig
+
+
 @dataclass
 class Profile:
     name: str = "default"
@@ -140,13 +175,63 @@ class Profile:
     # ROI 一律相對於擷取來源的左上角
     body_roi: Optional[Rect] = None
     speaker_roi: Optional[Rect] = None
+    # NPC 對白的版面。沒框就代表這個遊戲只有一種版面，一切照舊
+    npc_body_roi: Optional[Rect] = None
+    npc_speaker_roi: Optional[Rect] = None
     mask: MaskConfig = field(default_factory=MaskConfig)
     speaker_mask: Optional[MaskConfig] = None   # 不給就沿用 mask
+    npc_mask: Optional[MaskConfig] = None       # 不給就沿用 mask
+    npc_speaker_mask: Optional[MaskConfig] = None  # 不給就沿用 speaker_mask
     stability: StabilityConfig = field(default_factory=StabilityConfig)
     ocr: OcrConfig = field(default_factory=OcrConfig)
 
     def effective_speaker_mask(self) -> MaskConfig:
-        return self.speaker_mask or self.mask
+        return self.mask_for("speaker")
+
+    # --- 四種範圍 ---
+
+    def roi_of(self, region: str) -> Optional[Rect]:
+        return getattr(self, _spec(region)[2])
+
+    def set_roi(self, region: str, rect: Optional[Rect]) -> None:
+        setattr(self, _spec(region)[2], rect)
+
+    def mask_for(self, region: str) -> MaskConfig:
+        """這個範圍實際會用到的取字參數，沒設定就照 MASK_FALLBACK 往下退。"""
+        for attr in [_spec(region)[3]] + MASK_FALLBACK[region]:
+            cfg = getattr(self, attr)
+            if cfg is not None:
+                return cfg
+        return self.mask
+
+    def set_mask(self, region: str, cfg: MaskConfig) -> None:
+        setattr(self, _spec(region)[3], cfg)
+
+    def layouts(self) -> list[RegionSet]:
+        """已經框好的版面。一般永遠在第一個，沒框 NPC 就只有一套。"""
+        sets = [RegionSet("normal", "一般", self.body_roi, self.speaker_roi,
+                          self.mask_for("body"), self.mask_for("speaker"))]
+        if self.npc_body_roi:
+            sets.append(RegionSet("npc", "NPC", self.npc_body_roi,
+                                  self.npc_speaker_roi,
+                                  self.mask_for("npc_body"),
+                                  self.mask_for("npc_speaker")))
+        return sets
+
+    def watch_roi(self) -> Optional[Rect]:
+        """擷取後端用來判斷「有沒有被蓋住」的範圍。
+
+        兩套版面的對白框都要顧到，所以取外接矩形 —— 只盯一般對白框的話，
+        NPC 對白被別的視窗蓋住時不會退回 PrintWindow，就會抓到蓋在上面的東西。
+        """
+        boxes = [r for r in (self.body_roi, self.npc_body_roi) if r]
+        if not boxes:
+            return None
+        left = min(r[0] for r in boxes)
+        top = min(r[1] for r in boxes)
+        return (left, top,
+                max(r[0] + r[2] for r in boxes) - left,
+                max(r[1] + r[3] for r in boxes) - top)
 
     def validate(self) -> None:
         if not self.body_roi:
@@ -173,8 +258,13 @@ class Profile:
             capture_backend=data.get("capture_backend", "auto"),
             body_roi=rect(data.get("body_roi")),
             speaker_roi=rect(data.get("speaker_roi")),
+            npc_body_roi=rect(data.get("npc_body_roi")),
+            npc_speaker_roi=rect(data.get("npc_speaker_roi")),
             mask=mask,
             speaker_mask=_build(MaskConfig, speaker_mask_raw) if speaker_mask_raw else None,
+            npc_mask=_build(MaskConfig, data["npc_mask"]) if data.get("npc_mask") else None,
+            npc_speaker_mask=(_build(MaskConfig, data["npc_speaker_mask"])
+                              if data.get("npc_speaker_mask") else None),
             stability=_build(StabilityConfig, data.get("stability")),
             ocr=_build(OcrConfig, data.get("ocr")),
         )
@@ -194,3 +284,10 @@ class Profile:
         if not p.exists():
             raise FileNotFoundError(f"找不到 profile：{p}")
         return cls.from_dict(json.loads(p.read_text(encoding="utf-8")))
+
+
+def _spec(region: str) -> tuple[str, str, str, str]:
+    for spec in REGION_SPECS:
+        if spec[0] == region:
+            return spec
+    raise KeyError(f"沒有這種範圍：{region}")

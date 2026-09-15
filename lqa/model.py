@@ -73,6 +73,7 @@ class CapturedLine:
     body_text: str = ""        # 對白框 OCR 結果
     speaker_text: str = ""     # 姓名框 OCR 結果
     screenshot: str = ""       # 截圖相對路徑
+    layout: str = ""           # 這張用的是哪一套版面（normal / npc），空字串代表舊資料
     body_conf: float = 0.0     # OCR 平均信心值
     stable_ms: int = 0         # 保留欄位，舊 session 相容用
     samples: int = 0           # 這句被取樣幾次。太少代表可能沒抓到完整狀態

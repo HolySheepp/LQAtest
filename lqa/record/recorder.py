@@ -68,7 +68,7 @@ class Recorder:
         self._engine = engine or engine_for(profile)
         self._capture = capture or open_capture(
             profile.window_title, profile.capture_region, profile.capture_backend,
-            roi=profile.body_roi,
+            roi=profile.watch_roi(),
         )
         self._tracker = LineTracker(profile.stability, profile.mask.min_text_pixels)
         self._seq = 0

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..compare.normalize import match_key, similarity
-from ..config import Profile
+from ..config import Profile, RegionSet
 from ..detect import textmask as tm
 from ..imageio import imread
 from ..model import CapturedLine
@@ -32,23 +32,53 @@ from .store import SessionStore, session_meta, session_profile, session_shots
 ProgressCallback = Callable[[int, int, CapturedLine], None]
 
 
+def pick_layout(frame, layouts: list[RegionSet]) -> tuple[RegionSet, object]:
+    """這張截圖用的是哪一套版面。
+
+    靠對白框裡的文字量判斷 —— 同一個瞬間只會有一種對白框在畫面上，
+    所以有字的那一套就是當下的版面。兩套都有字時取文字多的那套
+    （另一套多半是撿到背景雜訊）。
+
+    都沒有字就回第一套（一般），後續照常產出空字串。這裡不丟例外：
+    使用者本來就可能不小心拍到沒有對白的畫面，那要當成「這句沒抓到」，
+    不是整輪解析失敗。
+
+    回傳遮罩是為了不要重算一次 —— 一張截圖 OCR 只有兩百多毫秒，
+    多建一次遮罩的成本在這個量級下是看得見的。
+    """
+    best, best_mask, best_count = layouts[0], None, -1
+    for layout in layouts:
+        if not layout.body_roi:
+            continue
+        mask = tm.build_mask(tm.crop(frame, layout.body_roi), layout.body_mask)
+        count = tm.text_pixel_count(mask)
+        if layout is layouts[0]:
+            best_mask = mask
+        if count >= layout.body_mask.min_text_pixels and count > best_count:
+            best, best_mask, best_count = layout, mask, count
+    if best_mask is None:
+        best_mask = tm.build_mask(tm.crop(frame, best.body_roi), best.body_mask)
+    return best, best_mask
+
+
 def _read_regions(
     frame, profile: Profile, engine: OcrEngine
-) -> tuple[str, str, float, bool, bool]:
-    body_img = tm.crop(frame, profile.body_roi)
-    body_mask = tm.build_mask(body_img, profile.mask)
-    body = engine.read(_ocr_input(body_img, body_mask, profile.mask, profile.ocr.source))
+) -> tuple[str, str, float, bool, bool, str]:
+    layout, body_mask = pick_layout(frame, profile.layouts())
+    body_img = tm.crop(frame, layout.body_roi)
+    body = engine.read(
+        _ocr_input(body_img, body_mask, layout.body_mask, profile.ocr.source))
 
     speaker_text = ""
-    if profile.speaker_roi:
-        cfg = profile.effective_speaker_mask()
-        img = tm.crop(frame, profile.speaker_roi)
+    if layout.speaker_roi:
+        cfg = layout.speaker_mask
+        img = tm.crop(frame, layout.speaker_roi)
         mask = tm.build_mask(img, cfg)
         if tm.text_pixel_count(mask) >= max(8, cfg.min_text_pixels // 4):
             speaker_text = engine.read(_ocr_input(img, mask, cfg, profile.ocr.source)).text
 
     bottom, right = tm.touches_edges(body_mask, profile.ocr.edge_margin_px)
-    return body.text, speaker_text, body.confidence, bottom, right
+    return (body.text, speaker_text, body.confidence, bottom, right, layout.key)
 
 
 def is_partial_of(earlier: str, later: str) -> bool:
@@ -117,7 +147,8 @@ def read_session(
             if frame is None:
                 print(f"  讀不到 {path.name}，略過")
                 continue
-            body, speaker, confidence, bottom, right = _read_regions(frame, profile, engine)
+            body, speaker, confidence, bottom, right, layout = _read_regions(
+                frame, profile, engine)
             line = CapturedLine(
                 seq=index,
                 expected_index=int(path.stem) if bound else -1,
@@ -126,6 +157,7 @@ def read_session(
                 speaker_text=speaker,
                 body_conf=confidence,
                 screenshot=f"shots/{path.name}",
+                layout=layout,
                 touches_bottom=bottom,
                 touches_right=right,
             )

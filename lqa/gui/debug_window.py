@@ -13,10 +13,12 @@ from typing import Optional
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..config import MaskConfig, Profile
+from ..config import (REGION_KEYS, REGION_LABELS, REGION_SPECS, MaskConfig,
+                      Profile)
 from ..logging_setup import get
 from ..detect import textmask as tm
 from .knob import Knob
+from .roi_picker import RoiPicker
 from .settings import GuiSettings
 from .theme import palette_for
 
@@ -86,7 +88,7 @@ class DebugWindow(QtWidgets.QWidget):
         self.profile = profile
         self.settings = settings
         self.frame: Optional[np.ndarray] = None
-        self.region = "body"
+        self.region = REGION_KEYS[0]
         self._grabber = None
         self._rendering = False
 
@@ -106,7 +108,11 @@ class DebugWindow(QtWidgets.QWidget):
 
         top = QtWidgets.QHBoxLayout()
         self.region_box = QtWidgets.QComboBox()
-        self.region_box.addItems(["對白框", "姓名框"])
+        for key, label, _roi, _mask in REGION_SPECS:
+            self.region_box.addItem(label, key)
+        self.region_box.setToolTip(
+            "NPC 對白的框和一般對白位置不同，要分開框。"
+            "解析時會自己挑出畫面上正在用的那一套")
         self.region_box.currentIndexChanged.connect(self._on_region)
         top.addWidget(QtWidgets.QLabel("範圍"))
         top.addWidget(self.region_box)
@@ -193,20 +199,19 @@ class DebugWindow(QtWidgets.QWidget):
     # --- 狀態 ---
 
     def _cfg(self) -> MaskConfig:
-        return (self.profile.mask if self.region == "body"
-                else self.profile.effective_speaker_mask())
+        return self.profile.mask_for(self.region)
 
     def _set_cfg(self, cfg: MaskConfig) -> None:
-        if self.region == "body":
-            self.profile.mask = cfg
-        else:
-            self.profile.speaker_mask = cfg
+        self.profile.set_mask(self.region, cfg)
 
     def _roi(self):
-        return self.profile.body_roi if self.region == "body" else self.profile.speaker_roi
+        return self.profile.roi_of(self.region)
+
+    def _is_speaker(self) -> bool:
+        return self.region.endswith("speaker")
 
     def _on_region(self, index: int) -> None:
-        self.region = "body" if index == 0 else "speaker"
+        self.region = self.region_box.itemData(index)
         self._sync_controls()
         self.render()
 
@@ -271,7 +276,16 @@ class DebugWindow(QtWidgets.QWidget):
 
     def _render(self) -> None:
         roi = self._roi()
-        if self.frame is None or roi is None:
+        if roi is None:
+            # NPC 的框一開始是空的。要講出來並清掉預覽，
+            # 否則畫面上留著上一個範圍的圖，看起來像框選沒有生效
+            self.original.setPixmap(QtGui.QPixmap())
+            self.masked.setPixmap(QtGui.QPixmap())
+            self.info.setText(
+                f"「{REGION_LABELS[self.region]}」還沒框選，按「重新框選」畫一個。"
+                "沒框的話解析時就只會用一般對白那一套")
+            return
+        if self.frame is None:
             return
         crop = tm.crop(self.frame, roi)
         if crop.size == 0:
@@ -305,24 +319,26 @@ class DebugWindow(QtWidgets.QWidget):
     # --- 動作 ---
 
     def _reframe(self) -> None:
-        """用 OpenCV 的框選工具重畫範圍，沿用命令列版的互動。"""
+        """框選範圍。
+
+        自己畫而不是用 OpenCV 的 selectROI —— 那個按叉叉取消不掉
+        （只會把視窗再開一次），而且標題走系統 ANSI 編碼，中文會變亂碼。
+        """
         if self.frame is None:
+            self.info.setText("還沒抓到畫面，先按「重新抓取」")
             return
-        try:
-            import cv2
-        except ImportError:
-            self.info.setText("需要 opencv 才能框選")
+        label = REGION_LABELS[self.region]
+        picker = RoiPicker(to_pixmap(self.frame), label, self._roi(), self)
+        if picker.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            self.info.setText(f"已取消，{label}維持原本的範圍")
             return
-        title = "拖曳框選" + ("對白框" if self.region == "body" else "姓名框")
-        box = cv2.selectROI(title, self.frame, showCrosshair=True, fromCenter=False)
-        cv2.destroyWindow(title)
-        x, y, w, h = (int(v) for v in box)
+        box = picker.result_rect()
+        if box is None:
+            return
+        x, y, w, h = box
         if w <= 0 or h <= 0:
             return
-        if self.region == "body":
-            self.profile.body_roi = (x, y, w, h)
-        else:
-            self.profile.speaker_roi = (x, y, w, h)
+        self.profile.set_roi(self.region, (x, y, w, h))
         self.render()
 
     def _test_ocr(self) -> None:
@@ -352,7 +368,7 @@ class DebugWindow(QtWidgets.QWidget):
         ROI 不動 —— 那是框選的成果，和參數是兩回事。
         """
         defaults = MaskConfig()
-        if self.region == "speaker":
+        if self._is_speaker():
             # 發話者可能是白色也可能是淺藍，colorkey 模式兩色都要收
             defaults = replace(defaults,
                                text_colors=["#fefefe", "#5dbcfe"],

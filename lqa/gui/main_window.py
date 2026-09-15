@@ -687,9 +687,10 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         if not path.exists():
             return QtGui.QPixmap()
         self._full_shot = path
-        return self._crop_to_dialogue(QtGui.QPixmap(str(path)))
+        return self._crop_to_dialogue(QtGui.QPixmap(str(path)), captured.layout)
 
-    def _crop_to_dialogue(self, pixmap: QtGui.QPixmap) -> QtGui.QPixmap:
+    def _crop_to_dialogue(self, pixmap: QtGui.QPixmap,
+                          layout_key: str = "") -> QtGui.QPixmap:
         """裁到對白框附近再顯示。
 
         存下來的是整個模擬器視窗，而手遊是直式的 —— 整張塞進側邊欄
@@ -698,7 +699,11 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         """
         if self.profile is None or pixmap.isNull():
             return pixmap
-        rois = [r for r in (self.profile.speaker_roi, self.profile.body_roi) if r]
+        # 裁哪一塊要看這張截圖用的是哪套版面 —— NPC 對白框和一般對白
+        # 不在同一個位置，裁錯就整片空白。舊資料沒記版面，退回一般
+        layouts = self.profile.layouts()
+        layout = next((l for l in layouts if l.key == layout_key), layouts[0])
+        rois = [r for r in (layout.speaker_roi, layout.body_roi) if r]
         if not rois:
             return pixmap
         left = min(r[0] for r in rois)
@@ -746,7 +751,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         try:
             self.capture = open_capture(
                 self.profile.window_title, self.profile.capture_region,
-                self.profile.capture_backend, roi=self.profile.body_roi)
+                self.profile.capture_backend, roi=self.profile.watch_roi())
         except Exception as exc:
             self._error("無法開始拍攝", str(exc))
             return

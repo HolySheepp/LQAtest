@@ -51,7 +51,7 @@ class Shooter:
         self.on_shot = on_shot
         self._capture = capture or open_capture(
             profile.window_title, profile.capture_region, profile.capture_backend,
-            roi=profile.body_roi,
+            roi=profile.watch_roi(),
         )
         self._shots: list[str] = []
         self._last_warning: Optional[str] = None

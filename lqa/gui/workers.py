@@ -91,7 +91,7 @@ class FrameGrabber(QtCore.QThread):
                     if capture is None:
                         capture = open_capture(
                             self.profile.window_title, self.profile.capture_region,
-                            self.profile.capture_backend, roi=self.profile.body_roi)
+                            self.profile.capture_backend, roi=self.profile.watch_roi())
                     frame = capture.grab()
                     reason = capture.unavailable()
                     if reason:
@@ -214,7 +214,7 @@ class AutoRecordWorker(QtCore.QThread):
         try:
             capture = open_capture(
                 self.profile.window_title, self.profile.capture_region,
-                self.profile.capture_backend, roi=self.profile.body_roi)
+                self.profile.capture_backend, roi=self.profile.watch_roi())
             tracker = LineTracker(self.profile.stability,
                                   self.profile.mask.min_text_pixels)
             while not self._stop:
