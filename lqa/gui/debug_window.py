@@ -146,6 +146,10 @@ class DebugWindow(QtWidgets.QWidget):
         root.addWidget(self.info)
 
         bottom = QtWidgets.QHBoxLayout()
+        reset = QtWidgets.QPushButton("恢復預設")
+        reset.setToolTip("把目前範圍的取字參數還原成預設值，ROI 不動")
+        reset.clicked.connect(self._reset_defaults)
+        bottom.addWidget(reset)
         bottom.addStretch(1)
         test = QtWidgets.QPushButton("測試辨識")
         test.clicked.connect(self._test_ocr)
@@ -181,15 +185,7 @@ class DebugWindow(QtWidgets.QWidget):
 
     def _on_region(self, index: int) -> None:
         self.region = "body" if index == 0 else "speaker"
-        cfg = self._cfg()
-        for key, knob in self.knobs.items():
-            knob.blockSignals(True)
-            knob.setValue(getattr(cfg, key))
-            knob.blockSignals(False)
-        self.method_box.blockSignals(True)
-        self.method_box.setCurrentIndex(METHODS.index(cfg.method)
-                                        if cfg.method in METHODS else 0)
-        self.method_box.blockSignals(False)
+        self._sync_controls()
         self.render()
 
     def _on_method(self, index: int) -> None:
@@ -326,6 +322,45 @@ class DebugWindow(QtWidgets.QWidget):
             self.info.setText(f"辨識失敗：{exc}")
             return
         self.info.setText(f"讀到：{result.text!r}　信心 {result.confidence:.3f}")
+
+    def _reset_defaults(self) -> None:
+        """把取字參數還原成預設值。
+
+        調壞了要有路可以回頭，否則使用者只能自己記得原本的數字。
+        ROI 不動 —— 那是框選的成果，和參數是兩回事。
+        """
+        if QtWidgets.QMessageBox.question(
+            self, "恢復預設",
+            f"要把「{self.region_box.currentText()}」的取字參數還原成預設值嗎？"
+            "（框選範圍不會變動）",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+        ) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        defaults = MaskConfig()
+        if self.region == "speaker":
+            # 發話者可能是白色也可能是淺藍，colorkey 模式兩色都要收
+            defaults = replace(defaults,
+                               text_colors=["#fefefe", "#5dbcfe"],
+                               min_text_pixels=max(8, defaults.min_text_pixels // 4))
+        self._set_cfg(defaults)
+        self._sync_controls()
+        self.render()
+        log.info("已還原 %s 的取字參數", self.region)
+        self.info.setText("已還原成預設值（尚未儲存）")
+
+    def _sync_controls(self) -> None:
+        """把目前設定同步回旋鈕與下拉選單。"""
+        cfg = self._cfg()
+        for key, knob in self.knobs.items():
+            knob.blockSignals(True)
+            knob.setValue(getattr(cfg, key))
+            knob.blockSignals(False)
+        self.method_box.blockSignals(True)
+        self.method_box.setCurrentIndex(
+            METHODS.index(cfg.method) if cfg.method in METHODS else 0)
+        self.method_box.blockSignals(False)
 
     def _save(self) -> None:
         self.profile.save(self.settings.profile_path)

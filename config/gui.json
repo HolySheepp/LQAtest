@@ -11,5 +11,7 @@
   "script_path": "scripts/2026_校園活動_主線文本 EN.xlsx",
   "profile_path": "config/profile.json",
   "speakers_path": "config/speakers.csv",
-  "notify_on_finish": true
+  "notify_on_finish": true,
+  "developer_mode": false,
+  "auto_poll_ms": 60
 }

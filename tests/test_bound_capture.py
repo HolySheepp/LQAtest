@@ -234,11 +234,8 @@ class TestSkippedIsNotMissing:
 
 
 class TestToggleHotkey:
-    def test_default_toggle_is_not_f12(self):
-        """F12 被 Windows 保留給偵錯子系統，遊戲有焦點時收不到。"""
-        from lqa.gui.settings import DEFAULT_HOTKEYS
-
-        assert DEFAULT_HOTKEYS["toggle"] != "f12"
+    """先前以為 F12 收不到，實際上是熱鍵監聽執行緒還沒啟動 ——
+    和按哪個鍵無關。這裡守住的是預設值可解析且彼此不衝突。"""
 
     def test_all_default_hotkeys_are_resolvable(self):
         from lqa.gui.settings import DEFAULT_HOTKEYS

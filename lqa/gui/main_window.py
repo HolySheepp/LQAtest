@@ -20,7 +20,8 @@ from ..record.project import Project
 from ..record.store import SessionStore
 from .settings import HOTKEY_LABELS, GuiSettings
 from .theme import ACCENT_LABELS, build_qss, palette_for
-from .workers import AnalyseWorker, HotkeyWatcher, ScriptLoadWorker
+from .workers import (AnalyseWorker, AutoRecordWorker, HotkeyWatcher,
+                      ScriptLoadWorker)
 
 
 def card(*children: QtWidgets.QWidget, spacing: int = 10) -> QtWidgets.QFrame:
@@ -59,7 +60,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.capture = None
         self.hotkeys: Optional[HotkeyWatcher] = None
         self.worker: Optional[QtCore.QThread] = None
+        self.auto_worker: Optional[QtCore.QThread] = None
         self.result = None
+        self._heading_clicks = 0
+        self._heading_last = QtCore.QTime.currentTime()
 
         self.setWindowTitle("LQA Checker")
         self.resize(1180, 760)
@@ -70,6 +74,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._load_script(self.settings.script_path)
         self.setAcceptDrops(True)
         self._start_hotkeys()
+        self.apply_developer_mode()
 
     def _start_hotkeys(self) -> None:
         """熱鍵監聽全程執行，不是只在拍攝時。
@@ -151,12 +156,69 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.lines.customContextMenuRequested.connect(self._line_menu)
 
+        self.lines_heading = label("條目", "section")
+        # 連點標題多下開啟開發者視窗，不佔用正常介面的空間
+        self.lines_heading.mousePressEvent = self._heading_clicked
         return card(
             label("頁簽（勾選要檢查的，點一下切換顯示）", "section"),
             self.sheet_list,
-            label("條目", "section"),
+            self.lines_heading,
             self.lines,
         )
+
+    def _heading_clicked(self, _event) -> None:
+        now = QtCore.QTime.currentTime()
+        if self._heading_last.msecsTo(now) > 600:
+            self._heading_clicks = 0
+        self._heading_last = now
+        self._heading_clicks += 1
+        if self._heading_clicks >= 5:
+            self._heading_clicks = 0
+            self._open_developer()
+
+    def apply_developer_mode(self) -> None:
+        self.auto_button.setVisible(self.settings.developer_mode)
+
+    def toggle_auto_record(self) -> None:
+        if self.auto_worker is not None:
+            self._stop_auto_record()
+            return
+        if self.bound is None:
+            self._error("無法自動錄製", "請先按「開始拍攝」，自動錄製會填進目前的游標位置")
+            return
+        worker = AutoRecordWorker(self.profile, self.settings.auto_poll_ms, self)
+        worker.line_ready.connect(self._on_auto_line)
+        worker.status.connect(self.status.setText)
+        worker.failed.connect(lambda m: (self._stop_auto_record(),
+                                         self._error("自動錄製失敗", m)))
+        worker.start()
+        self.auto_worker = worker
+        self.auto_button.setText("停止自動")
+        self.status.setText("自動錄製中，偵測到一句結束就會自動拍下")
+
+    def _stop_auto_record(self) -> None:
+        if self.auto_worker is not None:
+            self.auto_worker.stop()
+            self.auto_worker.wait(1500)
+            self.auto_worker = None
+        self.auto_button.setText("自動錄製")
+
+    def _on_auto_line(self, frame) -> None:
+        """自動偵測到一句結束，寫進目前游標所在的條目。"""
+        if self.bound is None:
+            return
+        index = self.bound.state.cursor
+        if self.bound.shoot(frame) is not None and index < len(self.expected):
+            self.project.record_shot(
+                self.sheet, index, self.expected[index].dialogue_id)
+        self._update_progress()
+
+    def _open_developer(self) -> None:
+        from .developer_window import DeveloperWindow
+
+        window = DeveloperWindow(self, self.settings)
+        window.show()
+        self._developer_window = window
 
     def _build_right(self) -> QtWidgets.QWidget:
         self.progress_label = label("尚未開始", "dim")
@@ -172,9 +234,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.analyse_button.clicked.connect(self.start_analysis)
         self.analyse_button.setEnabled(False)
 
+        self.auto_button = QtWidgets.QPushButton("自動錄製")
+        self.auto_button.setToolTip("實驗中：偵測打字結束並自動拍攝")
+        self.auto_button.clicked.connect(self.toggle_auto_record)
+        self.auto_button.setVisible(False)
+
         buttons = QtWidgets.QHBoxLayout()
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.analyse_button)
+        buttons.addWidget(self.auto_button)
 
         self.hotkey_hint = label("", "hint")
         self.hotkey_hint.setWordWrap(True)
@@ -187,6 +255,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.issues.setColumnWidth(0, 108)
         self.issues.setColumnWidth(1, 92)
         self.issues.itemSelectionChanged.connect(self._on_issue_selected)
+        self.issues.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.issues.customContextMenuRequested.connect(self._issue_menu)
 
         self.detail = QtWidgets.QPlainTextEdit()
         self.detail.setReadOnly(True)
@@ -382,6 +453,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return len(self.expected)
 
     def stop_capture(self) -> None:
+        self._stop_auto_record()
         # 不要在這裡關掉熱鍵監聽 —— 關了就再也按不了「開始」
         if self.capture:
             self.capture.close()
@@ -514,7 +586,7 @@ class MainWindow(QtWidgets.QMainWindow):
         menu = QtWidgets.QMenu(self)
         clear = menu.addAction("清除這條的截圖")
         clear.setEnabled(index in self.shots)
-        jump = menu.addAction("把游標移到這條")
+        jump = menu.addAction("從這條開始")
         jump.setEnabled(self.bound is not None)
         chosen = menu.exec(self.lines.mapToGlobal(pos))
         if chosen is clear and index in self.shots:
@@ -610,6 +682,43 @@ class MainWindow(QtWidgets.QMainWindow):
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, issue)
             self.issues.addTopLevelItem(item)
 
+    def _issue_menu(self, pos: QtCore.QPoint) -> None:
+        item = self.issues.itemAt(pos)
+        if item is None:
+            return
+        issue = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        expected = display_key(issue.expected.target_en) if issue.expected else ""
+        actual = display_key(issue.captured.body_text) if issue.captured else ""
+
+        menu = QtWidgets.QMenu(self)
+        entries = [
+            ("複製對話ID", issue.dialogue_id),
+            ("複製譯文（正確答案）", expected),
+            ("複製畫面文字", actual),
+            ("複製整列", "	".join([
+                CATEGORY_LABEL_ZH[issue.category], issue.dialogue_id,
+                expected, actual, issue.detail])),
+        ]
+        actions = {}
+        for text, payload in entries:
+            action = menu.addAction(text)
+            action.setEnabled(bool(payload))
+            actions[action] = payload
+        menu.addSeparator()
+        open_shot = menu.addAction("開啟截圖")
+        shot = None
+        if issue.captured and issue.captured.screenshot and self.store:
+            shot = self.store.dir / issue.captured.screenshot
+        open_shot.setEnabled(bool(shot and shot.exists()))
+
+        chosen = menu.exec(self.issues.mapToGlobal(pos))
+        if chosen in actions:
+            QtWidgets.QApplication.clipboard().setText(actions[chosen])
+            self.status.setText(f"已複製：{actions[chosen][:60]}")
+        elif chosen is open_shot and shot:
+            QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(shot.resolve())))
+
     def _on_issue_selected(self) -> None:
         items = self.issues.selectedItems()
         if not items:
@@ -673,6 +782,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         if self.bound is not None:
             self.stop_capture()
+        self._stop_auto_record()
         self._stop_hotkeys()
         self.settings.save()
         super().closeEvent(event)

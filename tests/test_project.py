@@ -161,3 +161,57 @@ class TestSheetMeta:
         meta = session_meta(project.sheet_dir("AVG6"))
         assert meta["mode"] == "bound"
         assert meta["sheets"] == ["AVG6"]
+
+
+class TestGuiSettings:
+    """介面設定要能跨重開保存，而且舊設定檔缺欄位時不能壞掉。"""
+
+    def test_new_fields_round_trip(self, tmp_path):
+        from lqa.gui.settings import GuiSettings
+
+        path = tmp_path / "gui.json"
+        settings = GuiSettings(developer_mode=True, auto_poll_ms=120,
+                               accent="teal", dark=False)
+        settings.save(path)
+        loaded = GuiSettings.load(path)
+        assert loaded.developer_mode is True
+        assert loaded.auto_poll_ms == 120
+        assert loaded.accent == "teal"
+        assert loaded.dark is False
+
+    def test_old_settings_file_gets_defaults(self, tmp_path):
+        import json
+
+        from lqa.gui.settings import GuiSettings
+
+        path = tmp_path / "gui.json"
+        path.write_text(json.dumps({"dark": True, "accent": "blue"}),
+                        encoding="utf-8")
+        loaded = GuiSettings.load(path)
+        assert loaded.developer_mode is False
+        assert loaded.auto_poll_ms > 0
+
+    def test_missing_hotkeys_are_filled_in(self, tmp_path):
+        import json
+
+        from lqa.gui.settings import DEFAULT_HOTKEYS, GuiSettings
+
+        path = tmp_path / "gui.json"
+        path.write_text(json.dumps({"hotkeys": {"shoot": "f9"}}), encoding="utf-8")
+        loaded = GuiSettings.load(path)
+        assert set(loaded.hotkeys) == set(DEFAULT_HOTKEYS)
+        assert loaded.hotkeys["shoot"] == "f9"
+
+    def test_corrupt_settings_file_falls_back(self, tmp_path):
+        from lqa.gui.settings import GuiSettings
+
+        path = tmp_path / "gui.json"
+        path.write_text("{ not json", encoding="utf-8")
+        assert GuiSettings.load(path).accent == "blue"
+
+    def test_clear_hotkey_exists(self):
+        """清除這條截圖的熱鍵，讓拍錯時不必整輪重來。"""
+        from lqa.gui.settings import DEFAULT_HOTKEYS, HOTKEY_LABELS
+
+        assert "clear" in DEFAULT_HOTKEYS
+        assert "clear" in HOTKEY_LABELS

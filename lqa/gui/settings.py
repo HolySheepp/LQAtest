@@ -16,9 +16,7 @@ DEFAULT_HOTKEYS = {
     "shoot": "f9",      # 拍下目前這條
     "skip": "f8",       # 跳過這條（留空）
     "back": "f7",       # 游標退回一條，下一張會覆蓋
-    # 不要用 F12：Windows 把它保留給偵錯子系統，
-    # GetAsyncKeyState 在遊戲有焦點時收不到，實測無效
-    "toggle": "f6",     # 開始／結束拍攝
+    "toggle": "f12",    # 開始／結束拍攝
     "clear": "f4",      # 刪掉目前這條的截圖，退回「未截圖」
 }
 
@@ -40,6 +38,9 @@ class GuiSettings:
     profile_path: str = "config/profile.json"
     speakers_path: str = "config/speakers.csv"
     notify_on_finish: bool = True
+    # 開發者模式：主視窗多出實驗中的自動錄製
+    developer_mode: bool = False
+    auto_poll_ms: int = 60
 
     @classmethod
     def load(cls, path: Path = SETTINGS_PATH) -> "GuiSettings":

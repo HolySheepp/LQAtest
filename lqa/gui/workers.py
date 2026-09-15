@@ -180,3 +180,68 @@ class ScriptLoadWorker(QtCore.QThread):
             self.loaded.emit(list_dialogue_sheets(self.path))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class AutoRecordWorker(QtCore.QThread):
+    """自動錄製：偵測到一句顯示完成就送回那一幀。
+
+    判準來自 LineTracker：打字只會增加筆畫，換句才會讓舊筆畫消失。
+    擷取與遮罩都在這個執行緒做，主執行緒只負責把畫面寫進游標所在的條目 ——
+    擷取一旦走 PrintWindow 就會阻塞，絕對不能放在 GUI 執行緒。
+    """
+
+    line_ready = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+    status = QtCore.Signal(str)
+
+    def __init__(self, profile: Profile, poll_ms: int = 60,
+                 parent: QtCore.QObject | None = None):
+        super().__init__(parent)
+        self.profile = profile
+        self.poll_ms = poll_ms
+        self._stop = False
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        from ..capture.mss_backend import open_capture
+        from ..detect import textmask as tm
+        from ..detect.linetracker import LineTracker
+
+        capture = None
+        last_reason = ""
+        try:
+            capture = open_capture(
+                self.profile.window_title, self.profile.capture_region,
+                self.profile.capture_backend, roi=self.profile.body_roi)
+            tracker = LineTracker(self.profile.stability,
+                                  self.profile.mask.min_text_pixels)
+            while not self._stop:
+                frame = capture.grab()
+                reason = capture.unavailable()
+                if reason:
+                    if reason != last_reason:
+                        last_reason = reason
+                        self.status.emit(reason)
+                    tracker.reset()
+                    self.msleep(self.poll_ms)
+                    continue
+                last_reason = ""
+                crop = tm.crop(frame, self.profile.body_roi)
+                event = tracker.feed(frame, tm.build_mask(crop, self.profile.mask))
+                if event is not None:
+                    self.line_ready.emit(event.frame)
+                self.msleep(self.poll_ms)
+            # 最後一句還壓在追蹤器裡，沒有 flush 就會遺失
+            final = tracker.flush()
+            if final is not None:
+                self.line_ready.emit(final.frame)
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+        finally:
+            if capture is not None:
+                try:
+                    capture.close()
+                except Exception:
+                    pass
