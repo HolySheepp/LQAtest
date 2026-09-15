@@ -65,6 +65,42 @@ class TestTitleBar:
         assert at(W - 60, 18, buttons=[close]) == tb.HTCAPTION
 
 
+WORK = (0, 0, 1920, 1032)
+
+
+class TestClampToWorkArea:
+    """最大化的視窗矩形有時會比工作區大一圈，那圈本來要給非工作區用。
+
+    我們把非工作區吃掉了，所以得自己夾回來，否則視窗溢出螢幕、
+    底部與兩側被切掉。
+    """
+
+    def test_overflowing_window_is_pulled_back(self):
+        assert tb.clamp_to_work_area((-8, -8, 1928, 1040), WORK) == WORK
+
+    def test_exact_fit_is_left_alone(self):
+        """實測 Qt 常常已經算好了。這時候再往內縮就會在邊上留一道縫。"""
+        assert tb.clamp_to_work_area(WORK, WORK) == WORK
+
+    def test_smaller_window_is_not_inflated(self):
+        assert tb.clamp_to_work_area((100, 100, 900, 700), WORK) == (100, 100, 900, 700)
+
+    def test_secondary_monitor_offsets_are_kept(self):
+        """第二螢幕的工作區不是從 0,0 開始，不能當成原點處理。"""
+        work = (1920, 0, 3840, 1032)
+        assert tb.clamp_to_work_area((1912, -8, 3848, 1040), work) == work
+
+
+class TestNativeFrameCalls:
+    """非 Windows 上這些呼叫要安靜地不做事，而不是炸掉。"""
+
+    def test_restore_is_a_no_op_without_a_handle(self):
+        assert tb.restore_native_frame(0) is False
+
+    def test_rounding_is_a_no_op_without_a_handle(self):
+        assert tb.round_corners(0) is False
+
+
 class TestClientArea:
     def test_body_is_left_to_qt(self):
         """內容區回 None，讓 Qt 照常處理點擊。"""

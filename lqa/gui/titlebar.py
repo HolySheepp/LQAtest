@@ -26,7 +26,31 @@ HTTOP, HTTOPLEFT, HTTOPRIGHT = 12, 13, 14
 HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT = 15, 16, 17
 
 WM_NCHITTEST = 0x0084
+WM_NCCALCSIZE = 0x0083
 BORDER = 6          # 邊緣拉伸的感應寬度
+
+GWL_STYLE = -16
+WS_THICKFRAME = 0x00040000
+WS_MINIMIZEBOX = 0x00020000
+WS_MAXIMIZEBOX = 0x00010000
+WS_SYSMENU = 0x00080000
+
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER = 0x0001, 0x0002, 0x0004
+SWP_NOACTIVATE, SWP_FRAMECHANGED = 0x0010, 0x0020
+
+MONITOR_DEFAULTTONEAREST = 2
+
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWCP_ROUND = 2
+
+
+class NCCALCSIZE_PARAMS(ctypes.Structure):
+    _fields_ = [("rgrc", wintypes.RECT * 3), ("lppos", ctypes.c_void_p)]
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
 
 
 class TitleBar(QtWidgets.QWidget):
@@ -51,13 +75,14 @@ class TitleBar(QtWidgets.QWidget):
         layout.addStretch(1)
 
         self.buttons: dict[str, QtWidgets.QPushButton] = {}
-        for name, text, slot in (
-            ("min", "─", self._minimise),
-            ("max", "□", self._toggle_max),
-            ("close", "✕", window.close),
+        for name, text, tip, slot in (
+            ("min", "─", "最小化", self._minimise),
+            ("max", "□", "最大化", self._toggle_max),
+            ("close", "✕", "關閉", window.close),
         ):
             button = QtWidgets.QPushButton(text)
             button.setObjectName(f"win{name.capitalize()}")
+            button.setToolTip(tip)
             button.setFixedSize(46, 38)
             button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
             button.clicked.connect(slot)
@@ -76,22 +101,100 @@ class TitleBar(QtWidgets.QWidget):
     def _toggle_max(self) -> None:
         if self.window_ref.isMaximized():
             self.window_ref.showNormal()
-            self.buttons["max"].setText("□")
         else:
             self.window_ref.showMaximized()
-            self.buttons["max"].setText("❐")
+        self.sync_max_button()
+
+    def sync_max_button(self) -> None:
+        """按鈕圖示跟著實際狀態走。
+
+        最大化不只來自這顆按鈕 —— 雙擊標題列、拖到螢幕頂端、貼邊分割
+        都由系統直接處理，不會經過這裡，所以要從視窗狀態反推。
+        """
+        maximised = self.window_ref.isMaximized()
+        button = self.buttons["max"]
+        button.setText("❐" if maximised else "□")
+        button.setToolTip("還原" if maximised else "最大化")
 
     def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:
+        # Windows 上這條路走不到（標題列回報成非工作區，系統自己處理），
+        # 留著是為了其他平台
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._toggle_max()
+
+
+def restore_native_frame(hwnd: int) -> bool:
+    """把 Qt 拿掉的視窗樣式加回去。
+
+    這是「自繪標題列後無法拉伸、最大化後拖不下來」的真正原因：
+    FramelessWindowHint 會把 WS_THICKFRAME 一起拿掉，而
+    DefWindowProc 的 SC_SIZE / SC_MOVE 是看樣式決定要不要動作的 ——
+    命中測試回報 HTLEFT 它也不理你。樣式加回來之後，拉伸、貼邊分割、
+    拖到頂端最大化、最大化後往下拖還原全部都回來了。
+
+    有了樣式就會有非工作區（那圈看不見的邊框），所以另外靠
+    WM_NCCALCSIZE 把它吃掉，畫面上才不會多一道框。
+    """
+    if not _IS_WINDOWS or not hwnd:
+        return False
+    user32 = ctypes.windll.user32
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+    user32.SetWindowLongW.restype = ctypes.c_long
+
+    handle = wintypes.HWND(hwnd)
+    style = user32.GetWindowLongW(handle, GWL_STYLE)
+    wanted = style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+    if wanted != style:
+        user32.SetWindowLongW(handle, GWL_STYLE, wanted)
+        user32.SetWindowPos(handle, None, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                            | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+    return True
+
+
+def round_corners(hwnd: int) -> bool:
+    """Windows 11 的圓角。
+
+    交給 DWM 而不是自己遮罩：系統畫的圓角有反鋸齒也有陰影，
+    自己用 QRegion 切出來的邊緣是鋸齒狀的。舊版 Windows 不認這個屬性，
+    呼叫會失敗但不會出事，就維持直角。
+    """
+    if not _IS_WINDOWS or not hwnd:
+        return False
+    try:
+        preference = ctypes.c_int(DWMWCP_ROUND)
+        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd), DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(preference), ctypes.sizeof(preference))
+        return result == 0
+    except OSError:
+        return False
+
+
+def clamp_to_work_area(window: tuple[int, int, int, int],
+                       work: tuple[int, int, int, int]
+                       ) -> tuple[int, int, int, int]:
+    """最大化時把工作區夾回螢幕的可用範圍。
+
+    最大化的視窗矩形有時候會比螢幕工作區大一圈 —— 系統假設那一圈會被
+    非工作區吃掉。我們把非工作區吃掉了，所以得自己夾回來，
+    否則視窗溢出螢幕，底部和兩側被切掉。
+
+    但那一圈不是每次都有（Qt 會自己算最大化尺寸），所以用「取交集」而不是
+    「固定往內縮一個邊框寬」—— 沒溢出時就什麼都不動，不會在邊上留一道縫。
+    """
+    return (max(window[0], work[0]), max(window[1], work[1]),
+            min(window[2], work[2]), min(window[3], work[3]))
 
 
 class FramelessMixin:
     """把視窗改成自繪外框，同時保住系統的拉伸與貼邊。
 
-    關鍵在 nativeEvent：Qt 只給我們工作區，系統以為整個視窗都是工作區，
-    於是不再提供拉伸與拖曳。把邊緣回報成 HTLEFT 之類、標題列回報成
-    HTCAPTION，系統就會照常處理 —— 包括貼邊分割和拖到頂端最大化。
+    兩件事缺一不可：
+      - 樣式要留著 WS_THICKFRAME，系統才肯做拉伸與移動
+      - 命中測試要回報邊緣與標題列，系統才知道該拉哪裡、該拖哪裡
     """
 
     def setup_frameless(self, title: str) -> TitleBar:
@@ -103,10 +206,29 @@ class FramelessMixin:
     def title_bar(self) -> TitleBar | None:
         return getattr(self, "_title_bar", None)
 
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        # 要等原生視窗真的存在才改得動樣式，show 之前 winId 可能還沒配
+        if not getattr(self, "_frame_ready", False):
+            self._frame_ready = True
+            handle = int(self.winId())
+            restore_native_frame(handle)
+            round_corners(handle)
+
+    def changeEvent(self, event) -> None:  # type: ignore[override]
+        super().changeEvent(event)
+        if event.type() == QtCore.QEvent.Type.WindowStateChange:
+            bar = self.title_bar()
+            if bar is not None:
+                bar.sync_max_button()
+
     def nativeEvent(self, event_type, message):  # type: ignore[override]
         if not _IS_WINDOWS or event_type != "windows_generic_MSG":
             return False, 0
         msg = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
+
+        if msg.message == WM_NCCALCSIZE and msg.wParam:
+            return True, self._eat_non_client_area(msg.hWnd, msg.lParam)
         if msg.message != WM_NCHITTEST:
             return False, 0
 
@@ -124,6 +246,29 @@ class FramelessMixin:
         if result is None:
             return False, 0
         return True, result
+
+    def _eat_non_client_area(self, hwnd, lparam: int) -> int:
+        """工作區 = 整個視窗，這樣加回來的邊框不會佔掉畫面。
+
+        視窗代號一定要用訊息自己帶的那個，**不能呼叫 winId()** ——
+        winId() 會讓 Qt 去確認原生視窗，那又會同步送出一則 WM_NCCALCSIZE，
+        於是這個函式再被叫一次，無限遞迴到堆疊爆掉（存取違規閃退）。
+        """
+        user32 = ctypes.windll.user32
+        # 問系統而不是問 Qt：這則訊息是在最大化的過程中送來的，
+        # 此時 Qt 那邊的視窗狀態還沒更新
+        if not user32.IsZoomed(hwnd):
+            return 0
+        work = _work_area(hwnd)
+        if work is None:
+            return 0
+        params = ctypes.cast(ctypes.c_void_p(lparam),
+                             ctypes.POINTER(NCCALCSIZE_PARAMS)).contents
+        rect = params.rgrc[0]
+        left, top, right, bottom = clamp_to_work_area(
+            (rect.left, rect.top, rect.right, rect.bottom), work)
+        rect.left, rect.top, rect.right, rect.bottom = left, top, right, bottom
+        return 0
 
 
 def hit_test(point: QtCore.QPoint, width: int, height: int, maximised: bool,
@@ -161,6 +306,24 @@ def hit_test(point: QtCore.QPoint, width: int, height: int, maximised: bool,
             return HTCLIENT
         return HTCAPTION
     return None
+
+
+def _work_area(hwnd) -> tuple[int, int, int, int] | None:
+    """視窗所在螢幕的可用範圍（扣掉工作列）。"""
+    user32 = ctypes.windll.user32
+    # HMONITOR 是指標，64 位元下 ctypes 預設的 c_int 回傳值會把它截半，
+    # 拿去查資訊就會失敗
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = ctypes.c_void_p
+    monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+    if not monitor:
+        return None
+    info = MONITORINFO()
+    info.cbSize = ctypes.sizeof(MONITORINFO)
+    if not user32.GetMonitorInfoW(ctypes.c_void_p(monitor), ctypes.byref(info)):
+        return None
+    work = info.rcWork
+    return work.left, work.top, work.right, work.bottom
 
 
 def title_bar_qss(palette) -> str:

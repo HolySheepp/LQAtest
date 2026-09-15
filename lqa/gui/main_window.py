@@ -18,8 +18,10 @@ from ..model import CATEGORY_LABEL_ZH, Category
 from ..record.bound import BoundCapture
 from ..record.project import Project
 from ..record.store import SessionStore
+from .results import (ALL, FILTER_LABELS, is_visible, next_flagged,
+                      rows_from_result)
 from .settings import HOTKEY_LABELS, GuiSettings
-from .theme import ACCENT_LABELS, build_qss, palette_for
+from .theme import build_qss, mix, palette_for
 from .titlebar import FramelessMixin, title_bar_qss
 from .workers import (AnalyseWorker, AutoRecordWorker, HotkeyWatcher,
                       ScriptLoadWorker)
@@ -46,6 +48,75 @@ def label(text: str, role: str = "") -> QtWidgets.QLabel:
     return widget
 
 
+class ShotView(QtWidgets.QLabel):
+    """截圖預覽。
+
+    縮放結果要記下來：setPixmap 會改變 sizeHint，進而觸發 resizeEvent，
+    如果每次 resize 都無條件重算就會無限遞迴（調試視窗就這樣當過）。
+    高度設上限，所以縮放只跟寬度有關，寬度沒變就什麼都不做。
+    """
+
+    MAX_HEIGHT = 240
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._source = QtGui.QPixmap()
+        self._drawn_width = -1
+        self.double_clicked = None
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumHeight(90)
+        self.setMaximumHeight(self.MAX_HEIGHT)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                           QtWidgets.QSizePolicy.Policy.Preferred)
+
+    def set_shot(self, pixmap: QtGui.QPixmap) -> None:
+        self._source = pixmap
+        self._drawn_width = -1
+        self._rescale()
+
+    def _rescale(self) -> None:
+        if self._source.isNull():
+            self.setPixmap(QtGui.QPixmap())
+            self.setText("（沒有截圖）")
+            return
+        width = max(80, self.width() - 4)
+        if width == self._drawn_width:
+            return
+        self._drawn_width = width
+        self.setPixmap(self._source.scaled(
+            QtCore.QSize(width, self.MAX_HEIGHT - 4),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._rescale()
+
+    def mouseDoubleClickEvent(self, _event: QtGui.QMouseEvent) -> None:
+        if self.double_clicked is not None and not self._source.isNull():
+            self.double_clicked()
+
+
+class RowTint(QtWidgets.QStyledItemDelegate):
+    """條目的底色。
+
+    套了樣式表之後，QTreeWidget::item 的規則會接管項目的背景繪製，
+    setBackground 設的筆刷就再也畫不出來 —— 黃底、灰底、拍攝游標的
+    highlight 全部靜靜地沒有效果。所以自己先填一層再交給預設繪製。
+
+    選取中的那條不填，不然看不出游標停在哪。
+    """
+
+    def paint(self, painter, option, index):
+        brush = index.data(QtCore.Qt.ItemDataRole.BackgroundRole)
+        selected = bool(option.state & QtWidgets.QStyle.StateFlag.State_Selected)
+        if brush is not None and not selected:
+            colour = brush.color() if isinstance(brush, QtGui.QBrush) else brush
+            if isinstance(colour, QtGui.QColor) and colour.alpha():
+                painter.fillRect(option.rect, colour)
+        super().paint(painter, option, index)
+
+
 class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -63,11 +134,13 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.worker: Optional[QtCore.QThread] = None
         self.auto_worker: Optional[QtCore.QThread] = None
         self.result = None
+        self.rows: dict = {}              # 列號 -> RowResult，解析後才有
+        self.filter_mode = ALL
         self._heading_clicks = 0
         self._heading_last = QtCore.QTime.currentTime()
 
         self.setWindowTitle("LQA Checker")
-        self.resize(1180, 760)
+        self.resize(1340, 800)
         self._apply_icon()
         self._build()
         self._load_profile()
@@ -76,7 +149,17 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self._load_script(self.settings.script_path)
         self.setAcceptDrops(True)
         self._start_hotkeys()
+        self._install_shortcuts()
         self.apply_developer_mode()
+
+    def _install_shortcuts(self) -> None:
+        """Ctrl + 上下：直接跳到下一條有疑慮的，不必一條條翻。
+
+        用 QShortcut 而不是攔截條目表的鍵盤事件，這樣焦點在哪都有效。
+        """
+        for keys, step in (("Ctrl+Down", 1), ("Ctrl+Up", -1)):
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence(keys), self)
+            shortcut.activated.connect(lambda s=step: self._jump_flagged(s))
 
     def _start_hotkeys(self) -> None:
         """熱鍵監聽全程執行，不是只在拍攝時。
@@ -132,7 +215,8 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
 
         body = QtWidgets.QHBoxLayout()
         body.setSpacing(12)
-        body.addWidget(self._build_left(), 3)
+        # 條目表現在同時放譯文和遊戲內文，兩欄要對照著讀，左邊給多一點
+        body.addWidget(self._build_left(), 5)
         body.addWidget(self._build_right(), 2)
         root.addLayout(body, 1)
 
@@ -167,14 +251,23 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.sheet_list.customContextMenuRequested.connect(self._sheet_menu)
 
         self.lines = QtWidgets.QTreeWidget()
-        self.lines.setHeaderLabels(["", "對話ID", "發話者", "英文翻譯"])
+        self.lines.setHeaderLabels(
+            ["", "對話ID", "發話者", "英文翻譯", "遊戲內文", "疑慮分類"])
         self.lines.setRootIsDecorated(False)
-        self.lines.header().setSectionResizeMode(
-            3, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.lines.setColumnWidth(0, 34)
-        self.lines.setColumnWidth(1, 92)
-        self.lines.setColumnWidth(2, 96)
+        self.lines.setUniformRowHeights(True)
+        self.lines.setItemDelegate(RowTint(self.lines))
+        self.lines.setAllColumnsShowFocus(True)
+        self.lines.setToolTip("上下鍵看條目，Ctrl + 上下鍵只跳疑慮條目")
+        header = self.lines.header()
+        # 譯文和遊戲內文是要對照著看的，兩欄等寬平分剩餘空間
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.lines.setColumnWidth(0, 30)
+        self.lines.setColumnWidth(1, 88)
+        self.lines.setColumnWidth(2, 92)
+        self.lines.setColumnWidth(5, 112)
         self.lines.itemDoubleClicked.connect(self._on_line_double_clicked)
+        self.lines.currentItemChanged.connect(self._on_line_current)
         self.lines.setContextMenuPolicy(
             QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.lines.customContextMenuRequested.connect(self._line_menu)
@@ -182,12 +275,70 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.lines_heading = label("條目", "section")
         # 連點標題多下開啟開發者視窗，不佔用正常介面的空間
         self.lines_heading.mousePressEvent = self._heading_clicked
+
+        head = QtWidgets.QHBoxLayout()
+        head.addWidget(self.lines_heading)
+        head.addStretch(1)
+        self.filters: dict[str, QtWidgets.QPushButton] = {}
+        group = QtWidgets.QButtonGroup(self)
+        group.setExclusive(True)
+        for mode, text in FILTER_LABELS:
+            chip = QtWidgets.QPushButton(text)
+            chip.setProperty("role", "chip")
+            chip.setCheckable(True)
+            chip.setChecked(mode == ALL)
+            chip.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+            chip.setToolTip("Ctrl + 上下鍵可以直接在疑慮條目之間移動")
+            chip.clicked.connect(lambda _c, m=mode: self._set_filter(m))
+            group.addButton(chip)
+            self.filters[mode] = chip
+            head.addWidget(chip)
+        self._filter_group = group
+        self._refresh_filter_labels()
+
         return card(
             label("頁簽（勾選要檢查的，點一下切換顯示）", "section"),
             self.sheet_list,
-            self.lines_heading,
+            head,
             self.lines,
         )
+
+    # ---------- 篩選 ----------
+
+    def _set_filter(self, mode: str) -> None:
+        self.filter_mode = mode
+        self.filters[mode].setChecked(True)      # 也可能是程式改的，按鈕要跟上
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """套用篩選。被藏起來的列不能留著游標，否則上下鍵會跳進看不見的地方。"""
+        current = self.lines.currentItem()
+        first_visible = None
+        for i in range(self.lines.topLevelItemCount()):
+            item = self.lines.topLevelItem(i)
+            shown = is_visible(self.rows.get(i), self.filter_mode)
+            item.setHidden(not shown)
+            if shown and first_visible is None:
+                first_visible = item
+        if current is not None and current.isHidden():
+            self.lines.setCurrentItem(first_visible)
+        shown_count = sum(not self.lines.topLevelItem(i).isHidden()
+                          for i in range(self.lines.topLevelItemCount()))
+        if self.filter_mode != ALL:
+            self.status.setText(f"篩選中：顯示 {shown_count} 條")
+
+    def _refresh_filter_labels(self) -> None:
+        """把條數寫進按鈕，不必切過去才知道有幾條。"""
+        flagged = sum(1 for row in self.rows.values() if row.flagged)
+        skipped = sum(1 for row in self.rows.values() if row.not_captured)
+        from .results import FLAGGED, NOT_CAPTURED
+
+        self.filters[FLAGGED].setText(
+            f"只顯示疑慮條目{f'（{flagged}）' if self.rows else ''}")
+        self.filters[NOT_CAPTURED].setText(
+            f"只顯示未截圖條目{f'（{skipped}）' if self.rows else ''}")
+        for mode in (FLAGGED, NOT_CAPTURED):
+            self.filters[mode].setEnabled(bool(self.rows))
 
     def _heading_clicked(self, _event) -> None:
         now = QtCore.QTime.currentTime()
@@ -270,32 +421,49 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.hotkey_hint = label("", "hint")
         self.hotkey_hint.setWordWrap(True)
 
-        self.issues = QtWidgets.QTreeWidget()
-        self.issues.setHeaderLabels(["分類", "對話ID", "說明"])
-        self.issues.setRootIsDecorated(False)
-        self.issues.header().setSectionResizeMode(
-            2, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.issues.setColumnWidth(0, 108)
-        self.issues.setColumnWidth(1, 92)
-        self.issues.itemSelectionChanged.connect(self._on_issue_selected)
-        self.issues.setContextMenuPolicy(
-            QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        self.issues.customContextMenuRequested.connect(self._issue_menu)
-
-        self.detail = QtWidgets.QPlainTextEdit()
-        self.detail.setReadOnly(True)
-        self.detail.setMaximumHeight(132)
-
-        return card(
+        capture_card = card(
             label("拍攝", "section"),
             self.progress_label,
             self.progress,
             buttons,
             self.hotkey_hint,
-            label("疑慮條目", "section"),
-            self.issues,
-            self.detail,
         )
+
+        self.detail_title = label("選一條看細節", "dim")
+        self.detail_expected = self._detail_box()
+        self.detail_actual = self._detail_box()
+        self.detail_verdict = label("", "")
+        self.detail_verdict.setWordWrap(True)
+        self.detail_shot = ShotView()
+        self.detail_shot.setToolTip("點兩下開啟原圖")
+        self.detail_shot.double_clicked = self._open_full_shot
+
+        detail_card = card(
+            self.detail_title,
+            label("英文翻譯（正確答案）", "section"),
+            self.detail_expected,
+            label("遊戲內文", "section"),
+            self.detail_actual,
+            label("判定", "section"),
+            self.detail_verdict,
+            label("截圖", "section"),
+            self.detail_shot,
+        )
+
+        holder = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(12)
+        column.addWidget(capture_card)
+        column.addWidget(detail_card, 1)
+        return holder
+
+    def _detail_box(self) -> QtWidgets.QPlainTextEdit:
+        box = QtWidgets.QPlainTextEdit()
+        box.setReadOnly(True)
+        box.setMaximumHeight(78)
+        box.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
+        return box
 
     # ---------- 主題 ----------
 
@@ -413,14 +581,139 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
 
     def _fill_lines(self) -> None:
         self.lines.clear()
+        # 換頁簽等於換一份結果，舊的判定不能留在畫面上誤導人
+        self.rows = {}
+        self.result = None
+        self.filter_mode = ALL
+        self.filters[ALL].setChecked(True)
+        self._refresh_filter_labels()
         for line in self.expected:
             item = QtWidgets.QTreeWidgetItem([
                 "", line.dialogue_id,
                 line.speaker_en or line.speaker_zh or "（旁白）",
-                display_key(line.target_en),
+                display_key(line.target_en), "", "",
             ])
             self.lines.addTopLevelItem(item)
         self._repaint_lines()
+        self._show_detail(self.lines.currentItem())
+
+    def _fill_results(self, result) -> None:
+        """把解析結果寫回條目表。"""
+        self.rows = rows_from_result(result)
+        for index in range(self.lines.topLevelItemCount()):
+            item = self.lines.topLevelItem(index)
+            row = self.rows.get(index)
+            if row is None:
+                item.setText(4, "")
+                item.setText(5, "")
+                continue
+            captured = row.captured
+            item.setText(4, display_key(captured.body_text) if captured else "")
+            item.setText(5, row.label)
+        self._refresh_filter_labels()
+        self._repaint_lines()
+        self._apply_filter()
+        # 直接跳到第一條有疑慮的，那才是使用者要看的
+        first = next_flagged(-1, self.lines.topLevelItemCount(), self.rows, 1)
+        if first >= 0 and self.rows.get(first) is not None:
+            self._select_row(first)
+        else:
+            self._show_detail(self.lines.currentItem())
+
+    # ---------- 細節面板 ----------
+
+    def _select_row(self, index: int) -> None:
+        item = self.lines.topLevelItem(index)
+        if item is None:
+            return
+        self.lines.setCurrentItem(item)
+        self.lines.scrollToItem(
+            item, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def _jump_flagged(self, step: int) -> None:
+        """Ctrl + 上下：只在有疑慮的條目間移動。"""
+        if not self.rows:
+            return
+        current = self.lines.indexOfTopLevelItem(self.lines.currentItem())
+        target = next_flagged(current, self.lines.topLevelItemCount(),
+                              self.rows, step)
+        if target != current:
+            self._select_row(target)
+
+    def _on_line_current(self, item, _previous=None) -> None:
+        self._show_detail(item)
+
+    def _show_detail(self, item) -> None:
+        index = self.lines.indexOfTopLevelItem(item) if item is not None else -1
+        if index < 0 or index >= len(self.expected):
+            self.detail_title.setText("選一條看細節")
+            self.detail_expected.setPlainText("")
+            self.detail_actual.setPlainText("")
+            self.detail_verdict.setText("")
+            self.detail_shot.set_shot(QtGui.QPixmap())
+            return
+
+        line = self.expected[index]
+        speaker = line.speaker_en or line.speaker_zh or "（旁白）"
+        self.detail_title.setText(
+            f"第 {index + 1} 條　{line.dialogue_id}　{speaker}")
+        self.detail_expected.setPlainText(display_key(line.target_en))
+
+        row = self.rows.get(index)
+        captured = row.captured if row is not None else None
+        if captured is not None:
+            text = display_key(captured.body_text)
+            heard = strip_speaker_id(captured.speaker_text)
+            if heard:
+                text = f"{heard}：{text}"
+            self.detail_actual.setPlainText(text)
+        else:
+            self.detail_actual.setPlainText("" if row is None else "（未截圖）")
+
+        self.detail_verdict.setText(self._verdict_text(row))
+        self.detail_shot.set_shot(self._shot_pixmap(captured))
+
+    def _verdict_text(self, row) -> str:
+        if row is None:
+            return "尚未解析"
+        # 說明裡通常已經帶了相似度，不另外再列一次
+        return "\n".join([row.label] + ([row.detail] if row.detail else []))
+
+    def _shot_pixmap(self, captured) -> QtGui.QPixmap:
+        self._full_shot = None
+        if captured is None or not captured.screenshot or self.store is None:
+            return QtGui.QPixmap()
+        path = self.store.dir / captured.screenshot
+        if not path.exists():
+            return QtGui.QPixmap()
+        self._full_shot = path
+        return self._crop_to_dialogue(QtGui.QPixmap(str(path)))
+
+    def _crop_to_dialogue(self, pixmap: QtGui.QPixmap) -> QtGui.QPixmap:
+        """裁到對白框附近再顯示。
+
+        存下來的是整個模擬器視窗，而手遊是直式的 —— 整張塞進側邊欄
+        只剩一百多像素寬，字根本認不出來，那這個預覽就白放了。
+        要看原圖可以點兩下，或右鍵「開啟截圖」。
+        """
+        if self.profile is None or pixmap.isNull():
+            return pixmap
+        rois = [r for r in (self.profile.speaker_roi, self.profile.body_roi) if r]
+        if not rois:
+            return pixmap
+        left = min(r[0] for r in rois)
+        top = min(r[1] for r in rois)
+        rect = QtCore.QRect(left, top,
+                            max(r[0] + r[2] for r in rois) - left,
+                            max(r[1] + r[3] for r in rois) - top)
+        rect = rect.adjusted(-10, -10, 10, 10).intersected(pixmap.rect())
+        return pixmap.copy(rect) if rect.isValid() else pixmap
+
+    def _open_full_shot(self) -> None:
+        path = getattr(self, "_full_shot", None)
+        if path is not None and path.exists():
+            QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(path.resolve())))
 
     # ---------- 拍攝 ----------
 
@@ -560,9 +853,24 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         plain = QtGui.QColor(self._palette.text)
         cursor = self.bound.state.cursor if self.bound else -1
         shots = self.shots
+        # 解析結果用底色表示：黃底有疑慮、灰底沒截到。
+        # 混進 surface 而不是用純黃，深淺主題都還讀得到字
+        flagged_bg = QtGui.QColor(mix(self._palette.warning, self._palette.surface, 0.30))
+        skipped_bg = QtGui.QColor(mix(self._palette.text_dim, self._palette.surface, 0.16))
+        blank = QtGui.QColor(0, 0, 0, 0)
 
         for i in range(self.lines.topLevelItemCount()):
             item = self.lines.topLevelItem(i)
+            row = self.rows.get(i)
+            if row is None:
+                result_bg = blank
+            elif row.flagged:
+                result_bg = flagged_bg
+            elif row.not_captured:
+                result_bg = skipped_bg
+            else:
+                result_bg = blank
+
             # 游標優先於「已拍」：退回到拍過的條目時要看得出游標在哪，
             # 否則使用者不知道下一張會覆蓋掉誰
             if i == cursor:
@@ -571,15 +879,15 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
                 fg, bg = accent, soft
             elif i in shots:
                 item.setText(0, "•")
-                mark, fg, bg = done, plain, QtGui.QColor(0, 0, 0, 0)
+                mark, fg, bg = done, plain, result_bg
             elif i < cursor:
                 item.setText(0, "-")
-                mark, fg, bg = dim, dim, QtGui.QColor(0, 0, 0, 0)
+                mark, fg, bg = dim, dim, result_bg
             else:
                 item.setText(0, "")
-                mark, fg, bg = plain, plain, QtGui.QColor(0, 0, 0, 0)
+                mark, fg, bg = plain, plain, result_bg
             item.setForeground(0, mark)
-            for column in range(1, 4):
+            for column in range(1, self.lines.columnCount()):
                 item.setForeground(column, fg)
                 item.setBackground(column, bg)
             item.setBackground(0, bg)
@@ -607,13 +915,46 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         if item is None or self.project is None:
             return
         index = self.lines.indexOfTopLevelItem(item)
+        line = self.expected[index] if index < len(self.expected) else None
+        row = self.rows.get(index)
+        captured = row.captured if row is not None else None
+        expected_text = display_key(line.target_en) if line else ""
+        actual_text = display_key(captured.body_text) if captured else ""
+
         menu = QtWidgets.QMenu(self)
+        copies = {}
+        for text, payload in (
+            ("複製對話ID", line.dialogue_id if line else ""),
+            ("複製譯文（正確答案）", expected_text),
+            ("複製遊戲內文", actual_text),
+            ("複製整列", "\t".join([
+                line.dialogue_id if line else "", expected_text, actual_text,
+                row.label if row else "", row.detail if row else ""])),
+        ):
+            action = menu.addAction(text)
+            action.setEnabled(bool(payload.strip()))
+            copies[action] = payload
+        menu.addSeparator()
+
+        open_shot = menu.addAction("開啟截圖")
+        shot = None
+        if captured is not None and captured.screenshot and self.store is not None:
+            shot = self.store.dir / captured.screenshot
+        open_shot.setEnabled(bool(shot and shot.exists()))
+
         clear = menu.addAction("清除這條的截圖")
         clear.setEnabled(index in self.shots)
         jump = menu.addAction("從這條開始")
         jump.setEnabled(self.bound is not None)
+
         chosen = menu.exec(self.lines.mapToGlobal(pos))
-        if chosen is clear and index in self.shots:
+        if chosen in copies:
+            QtWidgets.QApplication.clipboard().setText(copies[chosen])
+            self.status.setText(f"已複製：{copies[chosen][:60]}")
+        elif chosen is open_shot and shot:
+            QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(shot.resolve())))
+        elif chosen is clear and index in self.shots:
             self.project.clear_entry(self.sheet, index)
             if self.bound is not None:
                 self.bound.discard(index)
@@ -669,100 +1010,20 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self.project.mark_analysed(self.sheet)
         self.progress_label.setText("解析完成")
         self.analyse_button.setEnabled(True)
-        self._fill_issues(result)
+        self._fill_results(result)
         counts = result.summary()
-        problems = len(result.problems)
+        # 疑慮和未截圖分開講。未截圖是使用者自己跳過的，混在同一個數字裡
+        # 會讓人以為遊戲有那麼多問題
+        flagged = sum(1 for row in self.rows.values() if row.flagged)
+        skipped = sum(1 for row in self.rows.values() if row.not_captured)
         self.status.setText(
-            f"共 {len(result.expected)} 條，疑慮 {problems} 筆　"
+            f"共 {len(result.expected)} 條，疑慮 {flagged} 筆，未截圖 {skipped} 條　"
             + "　".join(f"{CATEGORY_LABEL_ZH[c]} {counts[c.value]}"
                         for c in Category if counts.get(c.value)))
         if self.settings.notify_on_finish:
-            self._notify("解析完成", f"{len(result.expected)} 條中有 {problems} 筆疑慮")
-
-    def _fill_issues(self, result) -> None:
-        self.issues.clear()
-        palette = self._palette
-        colour = {
-            Category.UNTRANSLATED: palette.danger,
-            Category.TRUNCATED: palette.warning,
-            Category.MISMATCH: palette.warning,
-            Category.SPEAKER: palette.accent,
-            Category.MISSING: palette.text_dim,
-            Category.NOT_CAPTURED: palette.text_dim,
-            Category.ORDER: palette.accent,
-            Category.EXTRA: palette.text_dim,
-        }
-        # 「未截圖」是使用者自己跳過的，不是遊戲的問題，排到最下面
-        ordered = sorted(result.problems,
-                         key=lambda i: (i.category is Category.NOT_CAPTURED,
-                                        i.expected_order or i.actual_order or 0))
-        for issue in ordered:
-            item = QtWidgets.QTreeWidgetItem([
-                CATEGORY_LABEL_ZH[issue.category],
-                issue.dialogue_id or "",
-                issue.detail,
-            ])
-            item.setForeground(0, QtGui.QColor(colour.get(issue.category, palette.text)))
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, issue)
-            self.issues.addTopLevelItem(item)
-
-    def _issue_menu(self, pos: QtCore.QPoint) -> None:
-        item = self.issues.itemAt(pos)
-        if item is None:
-            return
-        issue = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        expected = display_key(issue.expected.target_en) if issue.expected else ""
-        actual = display_key(issue.captured.body_text) if issue.captured else ""
-
-        menu = QtWidgets.QMenu(self)
-        entries = [
-            ("複製對話ID", issue.dialogue_id),
-            ("複製譯文（正確答案）", expected),
-            ("複製畫面文字", actual),
-            ("複製整列", "	".join([
-                CATEGORY_LABEL_ZH[issue.category], issue.dialogue_id,
-                expected, actual, issue.detail])),
-        ]
-        actions = {}
-        for text, payload in entries:
-            action = menu.addAction(text)
-            action.setEnabled(bool(payload))
-            actions[action] = payload
-        menu.addSeparator()
-        open_shot = menu.addAction("開啟截圖")
-        shot = None
-        if issue.captured and issue.captured.screenshot and self.store:
-            shot = self.store.dir / issue.captured.screenshot
-        open_shot.setEnabled(bool(shot and shot.exists()))
-
-        chosen = menu.exec(self.issues.mapToGlobal(pos))
-        if chosen in actions:
-            QtWidgets.QApplication.clipboard().setText(actions[chosen])
-            self.status.setText(f"已複製：{actions[chosen][:60]}")
-        elif chosen is open_shot and shot:
-            QtGui.QDesktopServices.openUrl(
-                QtCore.QUrl.fromLocalFile(str(shot.resolve())))
-
-    def _on_issue_selected(self) -> None:
-        items = self.issues.selectedItems()
-        if not items:
-            return
-        issue = items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
-        parts = []
-        if issue.expected:
-            parts.append(f"文本　{display_key(issue.expected.target_en)}")
-            speaker = issue.expected.speaker_en or issue.expected.speaker_zh
-            if speaker:
-                parts.append(f"發話者　{speaker}")
-        if issue.captured:
-            parts.append(f"畫面　{display_key(issue.captured.body_text)}")
-            if issue.captured.speaker_text:
-                parts.append(f"畫面發話者　{strip_speaker_id(issue.captured.speaker_text)}")
-            if issue.captured.screenshot and self.store:
-                parts.append(f"截圖　{self.store.dir / issue.captured.screenshot}")
-        if issue.similarity:
-            parts.append(f"相似度　{issue.similarity:.0%}")
-        self.detail.setPlainText("\n".join(parts))
+            self._notify("解析完成",
+                         f"{len(result.expected)} 條中有 {flagged} 筆疑慮"
+                         + (f"，另有 {skipped} 條未截圖" if skipped else ""))
 
     # ---------- 雜項 ----------
 
