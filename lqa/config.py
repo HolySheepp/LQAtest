@@ -60,10 +60,12 @@ class MaskConfig:
     clahe: bool = False         # 只對 otsu / adaptive 有意義，會破壞絕對門檻
     blur: int = 0               # 中值濾波核大小，0 表示不做。
                                 # 小字不要開，中值濾波會吃掉細筆畫
-    # bright 與 value 共用的門檻。實測掃描：亮場景下 85 與 140 的辨識率是
-    # 100% 與 99%，170 掉到 83%、200 只剩 32%。門檻太高會只留下筆畫核心
-    # 把字挖空。140 在辨識率與遮罩乾淨度之間取得平衡。
-    bright_threshold: int = 140
+    # bright 與 value 共用的門檻，在 hysteresis 裡是低門檻（取完整筆畫）。
+    # 實測掃描：亮場景下 85 與 140 的辨識率是 100% 與 99%，170 掉到 83%、
+    # 200 只剩 32%。門檻太高會只留下筆畫核心把字挖空，所以寧低勿高 ——
+    # 低門檻收進來的背景雜訊由 seed_threshold 的連通判斷擋掉。
+    # 100 是實際校準這款遊戲對白框之後採用的值。
+    bright_threshold: int = 100
     # hysteresis 的高門檻（種子）。要高到只有筆畫核心過得了，
     # 背景再亮也不該碰到；字的核心接近純白，所以 200 以上都很安全。
     seed_threshold: int = 210
@@ -71,7 +73,8 @@ class MaskConfig:
     # 送 OCR 前把遮罩往外膨脹幾圈，用來補回門檻砍掉的筆畫本體。
     # 變動偵測要乾淨的遮罩（門檻高），OCR 要完整的筆畫（門檻低），
     # 兩者需求相反，所以用高門檻取遮罩再靠膨脹補回來。
-    ocr_grow: int = 3
+    # 膨脹過頭會把相鄰筆畫黏在一起，反而更難認；配 100 的低門檻用 2 圈就夠。
+    ocr_grow: int = 2
     text_colors: list[str] = field(
         default_factory=lambda: ["#fefefe"]
     )                           # colorkey 用的顏色清單

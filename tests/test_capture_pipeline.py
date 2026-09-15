@@ -119,7 +119,10 @@ class TestColoredTextExtraction:
         assert white_gray - orange_gray > 80, "灰階把橘字壓得比白字低很多"
 
     def test_value_method_captures_both_white_and_colored_words(self):
-        cfg = MaskConfig(method="value")
+        # 門檻寫死而不是用預設值：這裡驗的是 value 取字方式本身的性質。
+        # 這個假造的對白框背景（V 中位數 106）比實際遊戲亮得多，
+        # 預設低門檻是照真實畫面校準的，套到這裡會整片背景都收進來
+        cfg = MaskConfig(method="value", bright_threshold=140)
         full = tm.build_mask(make_dialogue_frame(self.SEGMENTS), cfg)
         white_only = tm.build_mask(
             make_dialogue_frame([s for s in self.SEGMENTS if s[1] == DIALOGUE_WHITE]), cfg
@@ -159,7 +162,10 @@ class TestColoredTextExtraction:
 
     def test_bright_scene_background_is_not_mistaken_for_text(self):
         """就算場景是白的，漸變變暗後也不該被當成文字。"""
-        cfg = MaskConfig(method="value")
+        # 門檻寫死而不是用預設值：這裡驗的是 value 取字方式本身的性質。
+        # 這個假造的對白框背景（V 中位數 106）比實際遊戲亮得多，
+        # 預設低門檻是照真實畫面校準的，套到這裡會整片背景都收進來
+        cfg = MaskConfig(method="value", bright_threshold=140)
         blank = tm.build_mask(make_dialogue_frame([], bright_scene=True), cfg)
         assert tm.text_pixel_count(blank) < cfg.min_text_pixels
 
@@ -177,7 +183,8 @@ class TestOcrInputImages:
     def _inputs(self, upscale: int = 2):
         from lqa.record.recorder import _ocr_input
 
-        cfg = MaskConfig(method="value", upscale=upscale)
+        # 門檻同上，這個假造背景比實際遊戲亮，不能靠預設值
+        cfg = MaskConfig(method="value", upscale=upscale, bright_threshold=140)
         frame = make_dialogue_frame(self.SEGMENTS)
         mask = tm.build_mask(frame, cfg)
         return frame, mask, cfg, _ocr_input
@@ -231,7 +238,7 @@ class TestOcrInputImages:
         """橘字不能在挖背景的過程中被一起挖掉。"""
         from lqa.record.recorder import _ocr_input
 
-        cfg = MaskConfig(method="value", upscale=1)
+        cfg = MaskConfig(method="value", upscale=1, bright_threshold=140)
         with_orange = make_dialogue_frame(self.SEGMENTS)
         white_only = make_dialogue_frame([self.SEGMENTS[0]])
         dark_with = (_ocr_input(with_orange, tm.build_mask(with_orange, cfg),

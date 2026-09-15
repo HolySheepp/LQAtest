@@ -138,10 +138,10 @@ class TestProfileRoundTrip:
     def test_ocr_grow_defaults_for_older_profiles(self, tmp_path):
         import json
 
-        from lqa.config import Profile
+        from lqa.config import MaskConfig, Profile
 
         path = tmp_path / "old.json"
         path.write_text(json.dumps({"name": "t", "window_title": "測試",
                                     "body_roi": [0, 0, 10, 10],
                                     "mask": {"method": "value"}}), encoding="utf-8")
-        assert Profile.load(path).mask.ocr_grow == 3
+        assert Profile.load(path).mask.ocr_grow == MaskConfig().ocr_grow
