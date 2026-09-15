@@ -193,6 +193,13 @@ def mask_diff_ratio(a: np.ndarray | None, b: np.ndarray | None) -> float:
     return float(np.count_nonzero(a != b)) / float(a.size or 1)
 
 
+def mask_changed_pixels(a: np.ndarray | None, b: np.ndarray | None) -> int:
+    """兩張遮罩差異的絕對像素數。比例會被短句的小分母放大，所以還要看絕對量。"""
+    if a is None or b is None or a.shape != b.shape:
+        return 1 << 30
+    return int(np.count_nonzero(a != b))
+
+
 def mask_change_ratio(
     a: np.ndarray | None, b: np.ndarray | None, floor: int = 1
 ) -> float:

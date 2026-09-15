@@ -75,6 +75,10 @@ class StabilityConfig:
     stable_frames: int = 4          # 視窗長度：連續幾幀都沒變才算穩定
     min_gap_ms: int = 200           # 兩次擷取之間的最小間隔
     rearm_threshold: float = 0.04   # 單幀變動量超過此值才重新進入「等待穩定」狀態
+    # 變動像素的絕對下限。比例的分母是文字量，短句的遮罩只有一千多像素，
+    # 抗鋸齒邊緣抖個三十幾像素就會衝到 3%，句子越短越誇張。
+    # 所以比例與絕對量要同時達標才算真的變了。
+    min_changed_pixels: int = 40
 
 
 @dataclass

@@ -29,7 +29,7 @@ from typing import Optional
 import numpy as np
 
 from ..config import StabilityConfig
-from .textmask import mask_change_ratio, text_pixel_count
+from .textmask import mask_change_ratio, mask_changed_pixels, text_pixel_count
 
 
 @dataclass
@@ -40,6 +40,10 @@ class StableEvent:
     stable_ms: int
     text_pixels: int
     window_diff: float
+    # 這次擷取之前，對白框曾經淨空過。用來分辨「重複觸發」與
+    # 「劇情真的又講了一次同樣的話」。必須隨事件傳遞：
+    # 旗標在觸發當下就會被清掉，事後再讀一定是 False。
+    blanked_before: bool = False
 
 
 class StabilityTracker:
@@ -52,23 +56,39 @@ class StabilityTracker:
         self._dirty = False
         self._last_change_ms = 0.0
         self._last_emit_ms = -1e9
+        # 對白框曾經淨空過（過場、黑幕）。錄製端用它判斷「同一句又出現」
+        # 是重複觸發，還是劇情真的連續講了兩次一樣的話。
+        self.blanked_since_emit = True
 
     def reset(self) -> None:
         self._window.clear()
         self._prev = None
         self._last_emitted = None
         self._dirty = False
+        self.blanked_since_emit = True
 
     def _ratio(self, a: Optional[np.ndarray], b: Optional[np.ndarray]) -> float:
         return mask_change_ratio(a, b, self.min_text_pixels)
 
+    def _really_changed(
+        self, a: Optional[np.ndarray], b: Optional[np.ndarray], threshold: float
+    ) -> bool:
+        """比例與絕對像素量要同時達標才算真的變了。
+
+        只看比例的話，短句（遮罩只有一千多像素）光是抗鋸齒邊緣抖動
+        就會衝過門檻，被誤判成新的一句而重複記錄。
+        """
+        if self._ratio(a, b) <= threshold:
+            return False
+        return mask_changed_pixels(a, b) >= self.cfg.min_changed_pixels
+
     def feed(self, mask: np.ndarray, now_ms: float) -> Optional[StableEvent]:
         """餵一張遮罩。回傳非 None 代表這一刻可以擷取。"""
-        frame_diff = self._ratio(self._prev, mask)
-        self._prev = mask
         self._window.append(mask)
+        changed = self._really_changed(self._prev, mask, self.cfg.rearm_threshold)
+        self._prev = mask
 
-        if frame_diff > self.cfg.rearm_threshold:
+        if changed:
             self._dirty = True
             self._last_change_ms = now_ms
 
@@ -78,9 +98,9 @@ class StabilityTracker:
         if len(self._window) <= self.cfg.stable_frames:
             return None
 
-        window_diff = self._ratio(self._window[0], mask)
-        if window_diff > self.cfg.diff_threshold:
+        if self._really_changed(self._window[0], mask, self.cfg.diff_threshold):
             return None
+        window_diff = self._ratio(self._window[0], mask)
         if now_ms - self._last_emit_ms < self.cfg.min_gap_ms:
             return None
 
@@ -90,14 +110,17 @@ class StabilityTracker:
             # last_emitted 一併清掉，這樣空白之後重複出現的同一句仍會被記錄。
             self._dirty = False
             self._last_emitted = None
+            self.blanked_since_emit = True
             return None
 
         # 和上次擷取的內容一樣就不重複記錄（例如點擊沒推進）
-        if self._ratio(self._last_emitted, mask) <= self.cfg.diff_threshold:
+        if not self._really_changed(self._last_emitted, mask, self.cfg.diff_threshold):
             self._dirty = False
             return None
 
         self._dirty = False
+        blanked_before = self.blanked_since_emit
+        self.blanked_since_emit = False
         self._last_emitted = mask.copy()
         self._last_emit_ms = now_ms
         return StableEvent(
@@ -105,4 +128,5 @@ class StabilityTracker:
             stable_ms=int(now_ms - self._last_change_ms),
             text_pixels=pixels,
             window_diff=window_diff,
+            blanked_before=blanked_before,
         )

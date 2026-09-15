@@ -16,6 +16,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from ..capture.base import CaptureBackend
+from ..compare.normalize import similarity
 from ..capture.mss_backend import open_capture
 from ..config import MaskConfig, Profile
 from ..detect import textmask as tm
@@ -58,6 +59,7 @@ class Recorder:
         engine: Optional[OcrEngine] = None,
         capture: Optional[CaptureBackend] = None,
         on_line: Optional[LineCallback] = None,
+        repeat_threshold: float = 0.97,
     ):
         profile.validate()
         self.profile = profile
@@ -70,9 +72,29 @@ class Recorder:
         self._tracker = StabilityTracker(profile.stability, profile.mask.min_text_pixels)
         self._seq = 0
         self._last_warning: Optional[str] = None
+        self.repeat_threshold = repeat_threshold
+        self._last_text = ""
+        self._repeats = 0
 
     def _read(self, image: np.ndarray, mask: np.ndarray, cfg: MaskConfig) -> OcrResult:
         return self._engine.read(_ocr_input(image, mask, cfg, self.profile.ocr.source))
+
+    def _is_repeat(self, line: CapturedLine, blanked_before: bool) -> bool:
+        """同一句被重複擷取。
+
+        遮罩層的去重擋不掉所有情況：變動比例的分母是文字量，
+        短句的遮罩只有一千多像素，抗鋸齒抖動就可能被當成新的一句。
+        比對 OCR 文字是最直接的判準 —— 字一樣就是同一句。
+
+        例外是對白框中間淨空過（過場、黑幕），那代表劇情真的又講了一次，
+        這種重複要保留。
+        """
+        if not self._last_text or blanked_before:
+            return False
+        if similarity(self._last_text, line.body_text) < self.repeat_threshold:
+            return False
+        self._repeats += 1
+        return True
 
     def _capture_line(self, frame: np.ndarray, stable_ms: int) -> CapturedLine:
         p = self.profile
@@ -154,9 +176,10 @@ class Recorder:
                 event = self._tracker.feed(mask, time.time() * 1000.0)
                 if event is not None:
                     line = self._capture_line(frame, event.stable_ms)
-                    if line.body_text.strip():
+                    if line.body_text.strip() and not self._is_repeat(line, event.blanked_before):
                         self.store.append(line)
                         self._seq += 1
+                        self._last_text = line.body_text
                         if self.on_line:
                             self.on_line(line)
 
@@ -167,4 +190,6 @@ class Recorder:
         finally:
             self._capture.close()
 
+        if self._repeats:
+            print(f"（已略過 {self._repeats} 次重複觸發）")
         return self._seq
