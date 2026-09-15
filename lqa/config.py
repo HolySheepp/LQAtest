@@ -53,7 +53,10 @@ class MaskConfig:
 
     method: str = "hysteresis"  # hysteresis | value | colorkey | bright | otsu | adaptive
     invert: bool = False        # 深色底淺色字時不用開；淺底深字才開
-    upscale: int = 3            # OCR 前放大倍率，小字很吃這個
+    # OCR 前放大倍率。實測放大到 3 倍不會比較準（辨識模型內部本來就會把
+    # 文字裁切正規化到固定高度），卻讓偵測階段多算九倍像素、慢四倍。
+    # 只有文字小到偵測不出來時才需要調高。
+    upscale: int = 1
     clahe: bool = False         # 只對 otsu / adaptive 有意義，會破壞絕對門檻
     blur: int = 0               # 中值濾波核大小，0 表示不做。
                                 # 小字不要開，中值濾波會吃掉細筆畫
@@ -99,6 +102,19 @@ class StabilityConfig:
 class OcrConfig:
     engine: str = "rapidocr"
     lang: str = "en"
+    # onnxruntime 執行緒數。預設 0 代表用滿所有核心，那是病態設定：
+    # 20 核實測每張 2.9~4.1 秒、吃掉約 10 顆核心，因為大量執行緒搶小運算而忙等空轉。
+    # 限制成 4 之後每張 0.7 秒（快 4~6 倍），而且不會把模擬器餓死。
+    threads: int = 3
+    # 解析期間把行程降到低優先權。解析通常和遊玩同時進行，
+    # 讓出 CPU 給模擬器比早幾秒跑完重要。
+    low_priority: bool = True
+    # 文字偵測階段的縮放規則。RapidOCR 預設是 min/736，意思是
+    # 「把短邊放大到 736」—— 對白框只有 404x161，短邊會被放大 4.6 倍成
+    # 1846x736，光偵測就要 2.9 秒。改成限制長邊之後不再放大，
+    # 同一張圖 97ms，準確率完全相同（實測皆 100%）。
+    det_limit_type: str = "max"
+    det_limit_side_len: int = 960
     min_confidence: float = 0.45
     join_with: str = " "        # 多行結果合併方式
     edge_margin_px: int = 3     # 文字 bbox 距離 ROI 邊緣多少像素內算「貼邊」

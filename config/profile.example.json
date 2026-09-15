@@ -17,7 +17,7 @@
   "mask": {
     "method": "hysteresis",
     "invert": false,
-    "upscale": 3,
+    "upscale": 1,
     "clahe": false,
     "blur": 0,
     "bright_threshold": 100,
@@ -32,7 +32,7 @@
   "speaker_mask": {
     "method": "hysteresis",
     "invert": false,
-    "upscale": 3,
+    "upscale": 1,
     "clahe": false,
     "blur": 0,
     "bright_threshold": 100,
@@ -58,6 +58,10 @@
     "join_with": " ",
     "edge_margin_px": 3,
     "source": "masked_gray",
-    "screenshot_quality": 85
+    "screenshot_quality": 85,
+    "threads": 3,
+    "low_priority": true,
+    "det_limit_type": "max",
+    "det_limit_side_len": 960
   }
 }

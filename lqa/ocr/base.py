@@ -76,9 +76,19 @@ class OcrEngine(ABC):
         """辨識一張圖，回傳合併後的文字。"""
 
 
-def build_engine(name: str, lang: str = "en") -> OcrEngine:
+def build_engine(name: str, lang: str = "en", threads: int = 3,
+                 det_limit_type: str = "max", det_limit_side_len: int = 960) -> OcrEngine:
     if name == "rapidocr":
         from .rapidocr_engine import RapidOcrEngine  # noqa: PLC0415
 
-        return RapidOcrEngine(lang=lang)
+        return RapidOcrEngine(lang=lang, threads=threads,
+                              det_limit_type=det_limit_type,
+                              det_limit_side_len=det_limit_side_len)
     raise ValueError(f"未知的 OCR 引擎：{name}")
+
+
+def engine_for(profile) -> OcrEngine:
+    """依 profile 建立引擎。集中一處，免得各呼叫端漏傳效能參數。"""
+    ocr = profile.ocr
+    return build_engine(ocr.engine, ocr.lang, ocr.threads,
+                        ocr.det_limit_type, ocr.det_limit_side_len)

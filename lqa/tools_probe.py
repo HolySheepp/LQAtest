@@ -284,9 +284,9 @@ def run_probe(
     profile.validate()
 
     try:
-        from .ocr.base import build_engine
+        from .ocr.base import engine_for
 
-        engine = build_engine(profile.ocr.engine, profile.ocr.lang)
+        engine = engine_for(profile)
     except ImportError as exc:
         print(f"提醒：{exc}")
         print("      只做遮罩診斷，不跑 OCR。")

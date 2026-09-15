@@ -24,7 +24,8 @@ from ..config import Profile
 from ..detect import textmask as tm
 from ..imageio import imread
 from ..model import CapturedLine
-from ..ocr.base import OcrEngine, build_engine
+from ..ocr.base import OcrEngine, engine_for
+from ..priority import low_priority
 from .recorder import _ocr_input
 from .store import SessionStore, session_profile, session_shots
 
@@ -102,28 +103,30 @@ def read_session(
                 f"{session}/meta.json 裡沒有 profile，請用 --profile 指定"
             )
         profile = Profile.from_dict(stored)
-    engine = engine or build_engine(profile.ocr.engine, profile.ocr.lang)
+    engine = engine or engine_for(profile)
 
     lines: list[CapturedLine] = []
-    for index, path in enumerate(shots):
-        frame = imread(path)
-        if frame is None:
-            print(f"  讀不到 {path.name}，略過")
-            continue
-        body, speaker, confidence, bottom, right = _read_regions(frame, profile, engine)
-        line = CapturedLine(
-            seq=index,
-            timestamp=path.stat().st_mtime,
-            body_text=body,
-            speaker_text=speaker,
-            body_conf=confidence,
-            screenshot=f"shots/{path.name}",
-            touches_bottom=bottom,
-            touches_right=right,
-        )
-        lines.append(line)
-        if on_progress:
-            on_progress(index + 1, len(shots), line)
+    # 解析通常和遊玩同時進行，讓出排程給模擬器比早幾秒跑完重要
+    with low_priority(profile.ocr.low_priority):
+        for index, path in enumerate(shots):
+            frame = imread(path)
+            if frame is None:
+                print(f"  讀不到 {path.name}，略過")
+                continue
+            body, speaker, confidence, bottom, right = _read_regions(frame, profile, engine)
+            line = CapturedLine(
+                seq=index,
+                timestamp=path.stat().st_mtime,
+                body_text=body,
+                speaker_text=speaker,
+                body_conf=confidence,
+                screenshot=f"shots/{path.name}",
+                touches_bottom=bottom,
+                touches_right=right,
+            )
+            lines.append(line)
+            if on_progress:
+                on_progress(index + 1, len(shots), line)
 
     duplicates = partials = 0
     if do_clean:

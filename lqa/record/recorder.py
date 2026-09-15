@@ -22,7 +22,7 @@ from ..config import MaskConfig, Profile
 from ..detect import textmask as tm
 from ..detect.linetracker import LineEvent, LineTracker
 from ..model import CapturedLine
-from ..ocr.base import OcrEngine, OcrResult, build_engine
+from ..ocr.base import OcrEngine, OcrResult, engine_for
 from .store import SessionStore
 
 LineCallback = Callable[[CapturedLine], None]
@@ -65,7 +65,7 @@ class Recorder:
         self.profile = profile
         self.store = store
         self.on_line = on_line
-        self._engine = engine or build_engine(profile.ocr.engine, profile.ocr.lang)
+        self._engine = engine or engine_for(profile)
         self._capture = capture or open_capture(
             profile.window_title, profile.capture_region, profile.capture_backend,
             roi=profile.body_roi,
