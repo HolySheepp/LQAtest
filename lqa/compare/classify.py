@@ -150,7 +150,8 @@ def compare(
     speaker_enabled = any(c.speaker_text.strip() for c in captured)
 
     # 截圖已綁定條目時直接逐條配對；自由拍攝模式才需要序列對齊
-    if captured and all(c.expected_index >= 0 for c in captured):
+    bound = bool(captured) and all(c.expected_index >= 0 for c in captured)
+    if bound:
         pairs, reordered = _bound_pairs(expected, captured), set()
     else:
         pairs, reordered = align(
@@ -167,11 +168,15 @@ def compare(
 
         # 文本有、畫面沒有
         if exp is not None and cap is None:
+            # 綁定模式下「沒有這張截圖」只代表使用者跳過或漏拍，
+            # 不能推論成「遊戲裡沒有這句」—— 那是完全不同的結論，
+            # 混在一起會讓報告產出錯誤的判斷
             issues.append(
                 Issue(
-                    category=Category.MISSING,
+                    category=Category.NOT_CAPTURED if bound else Category.MISSING,
                     expected=exp,
-                    detail="這句在錄製過程中完全沒有出現",
+                    detail=("這條沒有截圖（跳過或漏拍），請自行複核"
+                            if bound else "這句在錄製過程中完全沒有出現"),
                     expected_order=exp.order + 1,
                 )
             )

@@ -25,6 +25,7 @@ class Category(str, Enum):
     MISMATCH = "MISMATCH"              # 不一致
     ORDER = "ORDER"                    # 順序不一致
     MISSING = "MISSING"                # 遊戲中沒這句
+    NOT_CAPTURED = "NOT_CAPTURED"      # 使用者沒有截到這條（跳過或漏拍）
     SPEAKER = "SPEAKER"                # 發話者錯誤
     EXTRA = "EXTRA"                    # 畫面出現、但文本中找不到對應
 
@@ -36,6 +37,7 @@ CATEGORY_LABEL_ZH = {
     Category.MISMATCH: "不一致",
     Category.ORDER: "順序不一致",
     Category.MISSING: "遊戲中沒這句",
+    Category.NOT_CAPTURED: "未截圖",
     Category.SPEAKER: "發話者錯誤",
     Category.EXTRA: "文本中無此句",
 }

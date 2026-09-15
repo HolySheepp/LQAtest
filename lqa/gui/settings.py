@@ -16,7 +16,9 @@ DEFAULT_HOTKEYS = {
     "shoot": "f9",      # 拍下目前這條
     "skip": "f8",       # 跳過這條（留空）
     "back": "f7",       # 游標退回一條，下一張會覆蓋
-    "toggle": "f12",    # 開始／結束拍攝
+    # 不要用 F12：Windows 把它保留給偵錯子系統，
+    # GetAsyncKeyState 在遊戲有焦點時收不到，實測無效
+    "toggle": "f6",     # 開始／結束拍攝
 }
 
 HOTKEY_LABELS = {

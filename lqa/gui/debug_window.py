@@ -31,16 +31,26 @@ METHOD_LABELS = {
 
 
 def to_pixmap(image: np.ndarray) -> QtGui.QPixmap:
+    """numpy 影像轉 QPixmap。
+
+    緩衝區一定要先綁到區域變數再建 QImage。QImage 不會複製傳進去的
+    位元組，如果直接寫 QImage(image.tobytes(), ...)，那個臨時 bytes
+    在建構式回傳後就被回收，接著 copy() 會去讀已經釋放的記憶體 ——
+    症狀是整個程式直接閃退，連例外都不會丟。
+    """
     if image.ndim == 2:
-        h, w = image.shape
-        fmt = QtGui.QImage.Format.Format_Grayscale8
-        qimage = QtGui.QImage(image.tobytes(), w, h, w, fmt)
+        height, width = image.shape
+        buffer = np.ascontiguousarray(image).tobytes()
+        qimage = QtGui.QImage(buffer, width, height, width,
+                              QtGui.QImage.Format.Format_Grayscale8)
     else:
-        h, w = image.shape[:2]
-        rgb = np.ascontiguousarray(image[:, :, ::-1])
-        qimage = QtGui.QImage(rgb.tobytes(), w, h, w * 3,
+        height, width = image.shape[:2]
+        buffer = np.ascontiguousarray(image[:, :, 2::-1]).tobytes()
+        qimage = QtGui.QImage(buffer, width, height, width * 3,
                               QtGui.QImage.Format.Format_RGB888)
-    return QtGui.QPixmap.fromImage(qimage.copy())
+    pixmap = QtGui.QPixmap.fromImage(qimage.copy())
+    del buffer          # copy() 之後才可以放掉
+    return pixmap
 
 
 class DebugWindow(QtWidgets.QWidget):
@@ -53,6 +63,7 @@ class DebugWindow(QtWidgets.QWidget):
         self.settings = settings
         self.frame: Optional[np.ndarray] = None
         self.region = "body"
+        self._capture = None
 
         self.setWindowTitle("調試")
         self.resize(940, 640)
@@ -178,20 +189,48 @@ class DebugWindow(QtWidgets.QWidget):
 
     # --- 畫面 ---
 
-    def refresh_frame(self) -> None:
-        from ..capture.mss_backend import open_capture
+    def _ensure_capture(self):
+        """重用同一個擷取後端。
 
+        每按一次「重新抓畫面」就新建一個的話，每次都會配置一組
+        GDI 裝置內容與 mss 實例。這些資源有行程層級的上限，
+        反覆開關是不必要的風險。
+        """
+        if self._capture is None:
+            from ..capture.mss_backend import open_capture
+
+            self._capture = open_capture(
+                self.profile.window_title, self.profile.capture_region,
+                self.profile.capture_backend, roi=self.profile.body_roi)
+        return self._capture
+
+    def refresh_frame(self) -> None:
         try:
-            capture = open_capture(self.profile.window_title,
-                                   self.profile.capture_region,
-                                   self.profile.capture_backend,
-                                   roi=self.profile.body_roi)
-            self.frame = capture.grab()
-            capture.close()
+            capture = self._ensure_capture()
+            frame = capture.grab()
+            reason = capture.unavailable()
+            if reason:
+                self.info.setText(f"抓不到畫面：{reason}")
+                return
+            self.frame = frame
         except Exception as exc:
-            self.info.setText(f"抓不到畫面：{exc}")
+            # 擷取牽涉到 Win32 呼叫，出錯要顯示出來而不是讓視窗直接消失
+            self._release_capture()
+            self.info.setText(f"抓不到畫面：{type(exc).__name__}: {exc}")
             return
         self.render()
+
+    def _release_capture(self) -> None:
+        if self._capture is not None:
+            try:
+                self._capture.close()
+            except Exception:
+                pass
+            self._capture = None
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._release_capture()
+        super().closeEvent(event)
 
     def render(self) -> None:
         roi = self._roi()

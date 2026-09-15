@@ -147,18 +147,8 @@ class TestBoundCompare:
         result = compare(expected, captured)
         assert result.problems == []
 
-    def test_a_skipped_entry_is_reported_as_missing(self, sample_xlsx):
-        from lqa.compare.classify import compare
-        from lqa.compare.script_loader import load_script
-        from lqa.model import Category
-
-        expected = load_script(sample_xlsx)
-        keep = [i for i in range(len(expected)) if i != 4]
-        captured = self._lines([expected[i].target_en for i in keep], keep)
-        result = compare(expected, captured)
-        missing = [i for i in result.problems if i.category is Category.MISSING]
-        assert len(missing) == 1
-        assert missing[0].dialogue_id == expected[4].dialogue_id
+    # 「跳過的條目怎麼分類」改由 TestSkippedIsNotMissing 涵蓋：
+    # 綁定模式下那是「未截圖」而不是「遊戲中沒這句」。
 
     def test_similar_neighbours_are_not_swapped(self, sample_xlsx):
         """逐條配對的關鍵好處：位置綁死，不會被相似句子拉走。"""
@@ -184,3 +174,80 @@ class TestBoundCompare:
         captured = self._lines([e.target_en for e in expected])
         result = compare(expected, captured)
         assert not [i for i in result.issues if i.category is Category.ORDER]
+
+
+class TestSkippedIsNotMissing:
+    """跳過 != 遊戲中沒這句。
+
+    使用者按跳過只代表他沒拍，不能推論成「遊戲裡沒有這句」——
+    那是完全不同的結論，混在一起會讓報告產出錯誤判斷。
+    """
+
+    def _captured(self, expected, keep):
+        from lqa.model import CapturedLine
+
+        return [CapturedLine(seq=n, timestamp=0.0, expected_index=i,
+                             body_text=expected[i].target_en)
+                for n, i in enumerate(keep)]
+
+    def test_skipped_entry_is_reported_as_not_captured(self, sample_xlsx):
+        from lqa.compare.classify import compare
+        from lqa.compare.script_loader import load_script
+        from lqa.model import Category
+
+        expected = load_script(sample_xlsx)
+        keep = [i for i in range(len(expected)) if i != 4]
+        result = compare(expected, self._captured(expected, keep))
+        flagged = [i for i in result.problems
+                   if i.category is Category.NOT_CAPTURED]
+        assert len(flagged) == 1
+        assert flagged[0].dialogue_id == expected[4].dialogue_id
+        assert not [i for i in result.problems if i.category is Category.MISSING]
+
+    def test_free_capture_still_reports_missing(self, sample_xlsx):
+        """自由拍攝模式沒有綁定關係，缺的那句仍然是「遊戲中沒這句」。"""
+        from lqa.compare.classify import compare
+        from lqa.compare.script_loader import load_script
+        from lqa.model import Category, CapturedLine
+
+        expected = load_script(sample_xlsx)
+        keep = [i for i in range(len(expected)) if i != 8]
+        captured = [CapturedLine(seq=n, timestamp=0.0, expected_index=-1,
+                                 body_text=expected[i].target_en)
+                    for n, i in enumerate(keep)]
+        result = compare(expected, captured)
+        assert [i.category for i in result.problems] == [Category.MISSING]
+
+    def test_label_is_distinct(self):
+        from lqa.model import CATEGORY_LABEL_ZH, Category
+
+        assert CATEGORY_LABEL_ZH[Category.NOT_CAPTURED] == "未截圖"
+        assert (CATEGORY_LABEL_ZH[Category.NOT_CAPTURED]
+                != CATEGORY_LABEL_ZH[Category.MISSING])
+
+    def test_report_knows_the_new_category(self):
+        from lqa.compare.report import CATEGORY_ORDER, _CATEGORY_FILL
+        from lqa.model import Category
+
+        assert Category.NOT_CAPTURED in CATEGORY_ORDER
+        assert Category.NOT_CAPTURED in _CATEGORY_FILL
+
+
+class TestToggleHotkey:
+    def test_default_toggle_is_not_f12(self):
+        """F12 被 Windows 保留給偵錯子系統，遊戲有焦點時收不到。"""
+        from lqa.gui.settings import DEFAULT_HOTKEYS
+
+        assert DEFAULT_HOTKEYS["toggle"] != "f12"
+
+    def test_all_default_hotkeys_are_resolvable(self):
+        from lqa.gui.settings import DEFAULT_HOTKEYS
+        from lqa.hotkey import resolve
+
+        for key in DEFAULT_HOTKEYS.values():
+            assert resolve(key) > 0
+
+    def test_defaults_do_not_collide(self):
+        from lqa.gui.settings import DEFAULT_HOTKEYS
+
+        assert len(set(DEFAULT_HOTKEYS.values())) == len(DEFAULT_HOTKEYS)

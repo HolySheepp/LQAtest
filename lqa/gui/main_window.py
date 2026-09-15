@@ -462,6 +462,7 @@ class MainWindow(QtWidgets.QMainWindow):
             Category.MISMATCH: palette.warning,
             Category.SPEAKER: palette.accent,
             Category.MISSING: palette.text_dim,
+            Category.NOT_CAPTURED: palette.text_dim,
             Category.ORDER: palette.accent,
             Category.EXTRA: palette.text_dim,
         }

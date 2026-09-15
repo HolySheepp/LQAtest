@@ -34,6 +34,32 @@ from .window import (
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
+# 一定要宣告 argtypes/restype。ctypes 預設把回傳值當成 32 位元 int，
+# 但 HDC / HBITMAP / HWND 在 64 位元下是指標 —— 不宣告的話控制代碼會被截斷，
+# 拿壞掉的值去操作 GDI 就是直接閃退（不會有例外可以接）。
+_user32.GetWindowDC.argtypes = [wintypes.HWND]
+_user32.GetWindowDC.restype = wintypes.HDC
+_user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+_user32.ReleaseDC.restype = ctypes.c_int
+_user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+_user32.PrintWindow.restype = wintypes.BOOL
+
+_gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+_gdi32.CreateCompatibleDC.restype = wintypes.HDC
+_gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+_gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+_gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+_gdi32.SelectObject.restype = wintypes.HGDIOBJ
+_gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+_gdi32.DeleteObject.restype = wintypes.BOOL
+_gdi32.DeleteDC.argtypes = [wintypes.HDC]
+_gdi32.DeleteDC.restype = wintypes.BOOL
+_gdi32.GetDIBits.argtypes = [
+    wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
+    ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT,
+]
+_gdi32.GetDIBits.restype = ctypes.c_int
+
 # PrintWindow 旗標。PW_RENDERFULLCONTENT 才抓得到硬體加速的內容。
 PW_RENDERFULLCONTENT = 0x00000002
 DIB_RGB_COLORS = 0

@@ -33,6 +33,7 @@ _CATEGORY_FILL = {
     Category.MISMATCH: "FFF2A8",
     Category.ORDER: "D6E4FF",
     Category.MISSING: "E4D6FF",
+    Category.NOT_CAPTURED: "DCDCE8",
     Category.SPEAKER: "D6F5E3",
     Category.EXTRA: "E8E8E8",
 }
@@ -44,6 +45,7 @@ CATEGORY_ORDER = [
     Category.SPEAKER,
     Category.ORDER,
     Category.MISSING,
+    Category.NOT_CAPTURED,
     Category.EXTRA,
     Category.PASS,
 ]
