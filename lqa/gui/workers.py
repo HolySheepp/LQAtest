@@ -49,6 +49,71 @@ class HotkeyWatcher(QtCore.QThread):
             self.msleep(15)
 
 
+class FrameGrabber(QtCore.QThread):
+    """在自己的執行緒抓畫面。
+
+    **絕對不能在 GUI 執行緒直接抓。** 視窗被蓋住時混合後端會走 PrintWindow，
+    而 PrintWindow 是同步送訊息給目標視窗並等它回應 —— 目標是正在算繪遊戲的
+    模擬器，這一等就把整個介面凍住（畫面顯示「沒有回應」）。
+    更糟的是等待期間 Windows 會把訊息回送給我們自己的視窗，
+    造成重入，最後直接閃退。
+
+    擷取後端在這個執行緒內建立並使用：mss 的實例本來就必須待在
+    建立它的執行緒。
+    """
+
+    grabbed = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, profile: Profile, parent: QtCore.QObject | None = None):
+        super().__init__(parent)
+        self.profile = profile
+        self._want = False
+        self._stop = False
+
+    def request(self) -> None:
+        self._want = True
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        from ..capture.mss_backend import open_capture
+
+        capture = None
+        try:
+            while not self._stop:
+                if not self._want:
+                    self.msleep(20)
+                    continue
+                self._want = False
+                try:
+                    if capture is None:
+                        capture = open_capture(
+                            self.profile.window_title, self.profile.capture_region,
+                            self.profile.capture_backend, roi=self.profile.body_roi)
+                    frame = capture.grab()
+                    reason = capture.unavailable()
+                    if reason:
+                        self.failed.emit(reason)
+                    else:
+                        self.grabbed.emit(frame)
+                except Exception as exc:
+                    if capture is not None:
+                        try:
+                            capture.close()
+                        except Exception:
+                            pass
+                        capture = None
+                    self.failed.emit(f"{type(exc).__name__}: {exc}")
+        finally:
+            if capture is not None:
+                try:
+                    capture.close()
+                except Exception:
+                    pass
+
+
 class AnalyseWorker(QtCore.QThread):
     """辨識 + 比對。"""
 

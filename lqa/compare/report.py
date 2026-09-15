@@ -45,8 +45,9 @@ CATEGORY_ORDER = [
     Category.SPEAKER,
     Category.ORDER,
     Category.MISSING,
-    Category.NOT_CAPTURED,
     Category.EXTRA,
+    # 未截圖是使用者自己跳過的，不是遊戲的問題，排在所有疑慮之後
+    Category.NOT_CAPTURED,
     Category.PASS,
 ]
 

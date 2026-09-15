@@ -65,6 +65,24 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.settings.script_path and Path(self.settings.script_path).exists():
             self._load_script(self.settings.script_path)
         self.setAcceptDrops(True)
+        self._start_hotkeys()
+
+    def _start_hotkeys(self) -> None:
+        """熱鍵監聽全程執行，不是只在拍攝時。
+
+        先前只在 start_capture 裡才啟動，於是「開始」那一下根本沒有人在聽 ——
+        按了沒反應，但一旦開始就收得到結束。和用哪個鍵無關。
+        """
+        self._stop_hotkeys()
+        self.hotkeys = HotkeyWatcher(self.settings.hotkeys, self)
+        self.hotkeys.pressed.connect(self._on_hotkey)
+        self.hotkeys.start()
+
+    def _stop_hotkeys(self) -> None:
+        if self.hotkeys is not None:
+            self.hotkeys.stop()
+            self.hotkeys.wait(300)
+            self.hotkeys = None
 
     # ---------- 版面 ----------
 
@@ -314,20 +332,13 @@ class MainWindow(QtWidgets.QMainWindow):
         })
         self.bound = BoundCapture(self.store, self.capture, len(self.expected))
 
-        self.hotkeys = HotkeyWatcher(self.settings.hotkeys, self)
-        self.hotkeys.pressed.connect(self._on_hotkey)
-        self.hotkeys.start()
-
         self.start_button.setText("結束拍攝")
         self.analyse_button.setEnabled(False)
         self.sheet_list.setEnabled(False)
         self._update_progress()
 
     def stop_capture(self) -> None:
-        if self.hotkeys:
-            self.hotkeys.stop()
-            self.hotkeys.wait(300)
-            self.hotkeys = None
+        # 不要在這裡關掉熱鍵監聽 —— 關了就再也按不了「開始」
         if self.capture:
             self.capture.close()
             self.capture = None
@@ -466,7 +477,11 @@ class MainWindow(QtWidgets.QMainWindow):
             Category.ORDER: palette.accent,
             Category.EXTRA: palette.text_dim,
         }
-        for issue in result.problems:
+        # 「未截圖」是使用者自己跳過的，不是遊戲的問題，排到最下面
+        ordered = sorted(result.problems,
+                         key=lambda i: (i.category is Category.NOT_CAPTURED,
+                                        i.expected_order or i.actual_order or 0))
+        for issue in ordered:
             item = QtWidgets.QTreeWidgetItem([
                 CATEGORY_LABEL_ZH[issue.category],
                 issue.dialogue_id or "",
@@ -523,6 +538,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if dialog.exec():
             self.settings.save()
             self.apply_theme()
+            self._start_hotkeys()      # 熱鍵可能被改過，重新掛上
 
     def _open_debug(self) -> None:
         from .debug_window import DebugWindow
@@ -538,5 +554,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         if self.bound is not None:
             self.stop_capture()
+        self._stop_hotkeys()
         self.settings.save()
         super().closeEvent(event)

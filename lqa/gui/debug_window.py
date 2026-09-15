@@ -63,7 +63,7 @@ class DebugWindow(QtWidgets.QWidget):
         self.settings = settings
         self.frame: Optional[np.ndarray] = None
         self.region = "body"
-        self._capture = None
+        self._grabber = None
 
         self.setWindowTitle("調試")
         self.resize(940, 640)
@@ -189,44 +189,33 @@ class DebugWindow(QtWidgets.QWidget):
 
     # --- 畫面 ---
 
-    def _ensure_capture(self):
-        """重用同一個擷取後端。
+    def _start_grabber(self) -> None:
+        from .workers import FrameGrabber
 
-        每按一次「重新抓畫面」就新建一個的話，每次都會配置一組
-        GDI 裝置內容與 mss 實例。這些資源有行程層級的上限，
-        反覆開關是不必要的風險。
-        """
-        if self._capture is None:
-            from ..capture.mss_backend import open_capture
-
-            self._capture = open_capture(
-                self.profile.window_title, self.profile.capture_region,
-                self.profile.capture_backend, roi=self.profile.body_roi)
-        return self._capture
+        if self._grabber is None:
+            self._grabber = FrameGrabber(self.profile, self)
+            self._grabber.grabbed.connect(self._on_frame)
+            self._grabber.failed.connect(self._on_grab_failed)
+            self._grabber.start()
 
     def refresh_frame(self) -> None:
-        try:
-            capture = self._ensure_capture()
-            frame = capture.grab()
-            reason = capture.unavailable()
-            if reason:
-                self.info.setText(f"抓不到畫面：{reason}")
-                return
-            self.frame = frame
-        except Exception as exc:
-            # 擷取牽涉到 Win32 呼叫，出錯要顯示出來而不是讓視窗直接消失
-            self._release_capture()
-            self.info.setText(f"抓不到畫面：{type(exc).__name__}: {exc}")
-            return
+        """要求抓一張。實際擷取在背景執行緒進行，這裡不會阻塞。"""
+        self._start_grabber()
+        self.info.setText("抓取中...")
+        self._grabber.request()
+
+    def _on_frame(self, frame) -> None:
+        self.frame = frame
         self.render()
 
+    def _on_grab_failed(self, message: str) -> None:
+        self.info.setText(f"抓不到畫面：{message}")
+
     def _release_capture(self) -> None:
-        if self._capture is not None:
-            try:
-                self._capture.close()
-            except Exception:
-                pass
-            self._capture = None
+        if self._grabber is not None:
+            self._grabber.stop()
+            self._grabber.wait(1000)
+            self._grabber = None
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self._release_capture()

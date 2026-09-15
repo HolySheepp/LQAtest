@@ -251,3 +251,46 @@ class TestToggleHotkey:
         from lqa.gui.settings import DEFAULT_HOTKEYS
 
         assert len(set(DEFAULT_HOTKEYS.values())) == len(DEFAULT_HOTKEYS)
+
+
+class TestNotCapturedSortsLast:
+    """未截圖是使用者自己跳過的，不是遊戲的問題，要排在所有疑慮之後。"""
+
+    def test_report_order_puts_it_after_every_real_issue(self):
+        from lqa.compare.report import CATEGORY_ORDER
+        from lqa.model import Category
+
+        real = [Category.UNTRANSLATED, Category.TRUNCATED, Category.MISMATCH,
+                Category.SPEAKER, Category.ORDER, Category.MISSING, Category.EXTRA]
+        position = CATEGORY_ORDER.index(Category.NOT_CAPTURED)
+        assert all(CATEGORY_ORDER.index(c) < position for c in real)
+
+    def test_it_still_comes_before_pass(self):
+        from lqa.compare.report import CATEGORY_ORDER
+        from lqa.model import Category
+
+        assert (CATEGORY_ORDER.index(Category.NOT_CAPTURED)
+                < CATEGORY_ORDER.index(Category.PASS))
+
+    def test_written_report_lists_it_last(self, sample_xlsx, tmp_path):
+        import csv
+
+        from lqa.compare.classify import compare
+        from lqa.compare.report import write_csv
+        from lqa.compare.script_loader import load_script
+        from lqa.model import CATEGORY_LABEL_ZH, CapturedLine, Category
+
+        expected = load_script(sample_xlsx)
+        captured = []
+        for i, exp in enumerate(expected):
+            if i == 4:
+                continue                      # 跳過這條 -> 未截圖
+            text = exp.target_en if i != 2 else "Something else entirely here."
+            captured.append(CapturedLine(seq=len(captured), timestamp=0.0,
+                                         expected_index=i, body_text=text))
+        path = write_csv(compare(expected, captured), tmp_path / "r.csv")
+        with path.open(encoding="utf-8-sig") as fh:
+            rows = list(csv.reader(fh))[1:]
+        labels = [r[0] for r in rows]
+        assert labels[-1] == CATEGORY_LABEL_ZH[Category.NOT_CAPTURED]
+        assert CATEGORY_LABEL_ZH[Category.MISMATCH] in labels[:-1]
