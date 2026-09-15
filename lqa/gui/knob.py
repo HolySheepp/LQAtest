@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..logging_setup import get
+
+log = get("gui.knob")
+
 PX_PER_DETENT = 10          # 拖曳多少像素跨一齒
 ANGLE_RANGE = 270           # 指針可轉的角度範圍（-135 ~ +135）
 TENSION_RATIO = 0.34        # 齒間張力最多推進到一齒角度的幾成，必須小於 0.5
@@ -126,7 +130,18 @@ class Knob(QtWidgets.QWidget):
     def _format(self, value: float) -> str:
         return f"{value:.{self.digits}f}" if self.digits else f"{value:.0f}"
 
-    def paintEvent(self, _event: QtGui.QPaintEvent) -> None:
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        """paintEvent 是虛擬函式，裡面丟例外不會往上傳，只會每次重繪都失敗一次。
+
+        先前 QPen 用了不支援的 cap 關鍵字，結果六個旋鈕在每次重繪都各丟一次
+        例外，介面看起來就是卡住。包起來確保單一繪製錯誤不會拖垮整個視窗。
+        """
+        try:
+            self._paint()
+        except Exception:
+            log.exception("旋鈕繪製失敗")
+
+    def _paint(self) -> None:
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
 
@@ -139,8 +154,10 @@ class Knob(QtWidgets.QWidget):
         ratio = (self._value - self.minimum) / span if span else 0.0
         tension_deg = self._tension * (ANGLE_RANGE * (self.step / span if span else 0)) * TENSION_RATIO
 
-        # 底環
-        pen = QtGui.QPen(self._track, 5, cap=QtCore.Qt.PenCapStyle.RoundCap)
+        # 底環。QPen 不吃 cap 關鍵字參數，要另外設 —— 寫成關鍵字的話
+        # paintEvent 每次重繪都會丟例外，旋鈕根本畫不出來
+        pen = QtGui.QPen(self._track, 5)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.drawArc(rect, int((-135 - 90) * -16), int(-ANGLE_RANGE * 16))
 
@@ -154,15 +171,20 @@ class Knob(QtWidgets.QWidget):
         transform = QtGui.QTransform().translate(centre.x(), centre.y()).rotate(angle)
         painter.save()
         painter.setTransform(transform, True)
-        painter.setPen(QtGui.QPen(self._accent, 2.5,
-                                  cap=QtCore.Qt.PenCapStyle.RoundCap))
+        needle = QtGui.QPen(self._accent, 2.5)
+        needle.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        painter.setPen(needle)
         painter.drawLine(QtCore.QPointF(0, -6), QtCore.QPointF(0, -radius + 5))
         painter.restore()
 
-        # 數值與標籤
+        # 數值與標籤。字型可能是以像素為單位，那時 pointSizeF() 會回 -1，
+        # 直接加減就變成負數，Qt 會拒絕並每次重繪都警告一次。
         painter.setPen(self._text)
         font = painter.font()
-        font.setPointSizeF(font.pointSizeF() + 0.5)
+        base = font.pointSizeF()
+        if base <= 0:
+            base = max(1.0, font.pixelSize() * 0.75)
+        font.setPointSizeF(base + 0.5)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(
@@ -171,7 +193,7 @@ class Knob(QtWidgets.QWidget):
             self._format(self._value) + self.unit,
         )
         font.setBold(False)
-        font.setPointSizeF(font.pointSizeF() - 1.5)
+        font.setPointSizeF(max(1.0, base - 1.0))
         painter.setFont(font)
         painter.setPen(self._dim)
         painter.drawText(

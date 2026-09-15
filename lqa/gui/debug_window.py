@@ -14,10 +14,13 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..config import MaskConfig, Profile
+from ..logging_setup import get
 from ..detect import textmask as tm
 from .knob import Knob
 from .settings import GuiSettings
 from .theme import palette_for
+
+log = get("gui.debug")
 
 METHODS = ["hysteresis", "value", "colorkey", "otsu", "adaptive", "bright"]
 METHOD_LABELS = {
@@ -64,9 +67,13 @@ class DebugWindow(QtWidgets.QWidget):
         self.frame: Optional[np.ndarray] = None
         self.region = "body"
         self._grabber = None
+        self._rendering = False
 
         self.setWindowTitle("調試")
         self.resize(940, 640)
+        self._resize_timer = QtCore.QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self.render)
         self._build()
         self._apply_theme()
         self.refresh_frame()
@@ -104,8 +111,14 @@ class DebugWindow(QtWidgets.QWidget):
         self.masked = QtWidgets.QLabel()
         for view in (self.original, self.masked):
             view.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            view.setMinimumHeight(190)
+            view.setMinimumSize(120, 190)
             view.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+            # setPixmap 會改變 QLabel 的尺寸建議，進而觸發版面重算與
+            # resizeEvent；resizeEvent 又呼叫 render 再 setPixmap ——
+            # 無限遞迴直到堆疊爆掉。Ignored 讓標籤的尺寸完全由版面決定，
+            # 放什麼圖進去都不會回頭影響版面。
+            view.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                               QtWidgets.QSizePolicy.Policy.Ignored)
             images.addWidget(view, 1)
         root.addLayout(images, 1)
 
@@ -200,15 +213,18 @@ class DebugWindow(QtWidgets.QWidget):
 
     def refresh_frame(self) -> None:
         """要求抓一張。實際擷取在背景執行緒進行，這裡不會阻塞。"""
+        log.debug("要求抓圖")
         self._start_grabber()
         self.info.setText("抓取中...")
         self._grabber.request()
 
     def _on_frame(self, frame) -> None:
+        log.debug("收到畫面 %sx%s", frame.shape[1], frame.shape[0])
         self.frame = frame
         self.render()
 
     def _on_grab_failed(self, message: str) -> None:
+        log.warning("抓圖失敗：%s", message)
         self.info.setText(f"抓不到畫面：{message}")
 
     def _release_capture(self) -> None:
@@ -222,6 +238,20 @@ class DebugWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
     def render(self) -> None:
+        # 即使版面已經不會回頭觸發 render，仍保留這道防護：
+        # 重入一次就會遞迴到堆疊溢位，代價太高
+        if self._rendering:
+            log.warning("render 重入，已擋下 —— 這代表版面又回頭觸發了重畫")
+            return
+        self._rendering = True
+        try:
+            self._render()
+        except Exception:
+            log.exception("重畫失敗")
+        finally:
+            self._rendering = False
+
+    def _render(self) -> None:
         roi = self._roi()
         if self.frame is None or roi is None:
             return
@@ -251,7 +281,8 @@ class DebugWindow(QtWidgets.QWidget):
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
-        self.render()
+        # 不要在版面計算當下重畫，排到事件迴圈之後
+        self._resize_timer.start(80)
 
     # --- 動作 ---
 

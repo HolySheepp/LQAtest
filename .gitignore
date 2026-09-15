@@ -23,3 +23,7 @@ scripts/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 執行時產生的記錄
+logs/
+debug/
