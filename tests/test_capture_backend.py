@@ -51,6 +51,15 @@ class FakePrintWindow:
         pass
 
 
+class FakeHybrid:
+    instances: list["FakeHybrid"] = []
+
+    def __init__(self, title, roi=None, *_args, **_kwargs):
+        self.title = title
+        self.roi = roi
+        FakeHybrid.instances.append(self)
+
+
 class FakeMss:
     instances: list["FakeMss"] = []
 
@@ -62,51 +71,48 @@ class FakeMss:
 
 @pytest.fixture
 def fake_backends(monkeypatch):
-    FakePrintWindow.instances.clear()
-    FakeMss.instances.clear()
+    for fake in (FakePrintWindow, FakeHybrid, FakeMss):
+        fake.instances.clear()
     monkeypatch.setattr(mss_backend, "MssCapture", FakeMss)
 
-    def install(print_window_works: bool):
-        import lqa.capture.gdi_backend as gdi
+    import lqa.capture.gdi_backend as gdi
+    import lqa.capture.hybrid as hybrid
 
-        monkeypatch.setattr(gdi, "PrintWindowCapture", FakePrintWindow)
-        monkeypatch.setattr(gdi, "can_use_print_window",
-                            lambda _title: print_window_works)
-    return install
+    monkeypatch.setattr(gdi, "PrintWindowCapture", FakePrintWindow)
+    monkeypatch.setattr(hybrid, "HybridCapture", FakeHybrid)
+    return None
 
 
 class TestOpenCapture:
-    def test_auto_prefers_print_window_when_it_works(self, fake_backends):
-        fake_backends(print_window_works=True)
+    """預設走混合模式：平常用便宜的 mss，偵測到被蓋住才用 PrintWindow。"""
+
+    def test_auto_uses_the_hybrid_backend(self, fake_backends):
         capture = mss_backend.open_capture("測試", None, "auto")
-        assert isinstance(capture, FakePrintWindow)
+        assert isinstance(capture, FakeHybrid)
         assert not FakeMss.instances
+        assert not FakePrintWindow.instances
 
-    def test_auto_falls_back_to_mss_when_print_window_is_blank(self, fake_backends):
-        fake_backends(print_window_works=False)
-        capture = mss_backend.open_capture("測試", (0, 0, 10, 10), "auto")
-        assert isinstance(capture, FakeMss)
+    def test_auto_passes_the_roi_so_only_it_is_watched(self, fake_backends):
+        """整個視窗被蓋住一角但對白框沒事時，沒必要付 PrintWindow 的代價。"""
+        roi = (91, 799, 404, 161)
+        capture = mss_backend.open_capture("測試", None, "auto", roi=roi)
+        assert capture.roi == roi
 
-    def test_explicit_printwindow_skips_the_probe(self, fake_backends):
-        """指定 printwindow 時不做黑畫面偵測，直接用。"""
-        fake_backends(print_window_works=False)
+    def test_explicit_printwindow_is_honoured(self, fake_backends):
         capture = mss_backend.open_capture("測試", None, "printwindow")
         assert isinstance(capture, FakePrintWindow)
 
     def test_explicit_mss_never_tries_print_window(self, fake_backends):
-        fake_backends(print_window_works=True)
         capture = mss_backend.open_capture("測試", (0, 0, 10, 10), "mss")
         assert isinstance(capture, FakeMss)
         assert not FakePrintWindow.instances
 
     def test_region_only_profile_uses_mss(self, fake_backends):
-        """只給絕對座標、沒有視窗標題時，PrintWindow 無從施力。"""
-        fake_backends(print_window_works=True)
+        """只給絕對座標、沒有視窗標題時，視窗相關的後端都無從施力。"""
         capture = mss_backend.open_capture(None, (0, 0, 10, 10), "auto")
         assert isinstance(capture, FakeMss)
 
     def test_unknown_backend_raises(self, fake_backends):
-        fake_backends(print_window_works=True)
         with pytest.raises(ValueError):
             mss_backend.open_capture("測試", None, "magic")
 

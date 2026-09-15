@@ -314,12 +314,18 @@ def run_probe(
         inspect(frame, 1, str(image))
     else:
         capture = open_capture(
-            profile.window_title, profile.capture_region, profile.capture_backend
+            profile.window_title, profile.capture_region, profile.capture_backend,
+            roi=profile.body_roi,
         )
         kind = type(capture).__name__
-        occlusion = ("被其他視窗蓋住也抓得到" if kind == "PrintWindowCapture"
-                     else "抓的是螢幕區域，模擬器被蓋住會抓到遮擋內容")
-        print(f"擷取後端：{kind}（{occlusion}）")
+        note = {
+            "HybridCapture": "平常用便宜的螢幕擷取，偵測到被蓋住才改用 PrintWindow",
+            "PrintWindowCapture": "一律請視窗自己畫，被蓋住也抓得到但模擬器會變慢",
+            "MssCapture": "只抓螢幕區域，模擬器被蓋住會抓到遮擋內容",
+        }.get(kind, "")
+        print(f"擷取後端：{kind}（{note}）")
+        if getattr(capture, "last_path", "") or hasattr(capture, "covered_frames"):
+            print(f"          本次走的路徑：{getattr(capture, 'last_path', '?')}")
         print("")
         try:
             for index in range(1, samples + 1):

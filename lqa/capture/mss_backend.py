@@ -28,7 +28,7 @@ class MssCapture(CaptureBackend):
         except ImportError as exc:  # pragma: no cover
             raise ImportError("擷取功能需要 mss：pip install mss") from exc
 
-        self._mss = mss.mss()
+        self._mss = mss.MSS()
         self._window_title = window_title
         self._fallback = capture_region
         self._region = resolve_region(window_title, capture_region)
@@ -78,22 +78,25 @@ def open_capture(
     window_title: Optional[str],
     capture_region: Optional[Rect],
     backend: str = "auto",
+    roi: Optional[Rect] = None,
 ) -> CaptureBackend:
     """建立擷取後端。
 
-    auto（預設）優先用 PrintWindow，因為它是向視窗要畫面，
-    被其他視窗蓋住也抓得到；實際抓一張確認不是黑畫面才採用，
-    不行就退回 mss 抓螢幕區域。
+    auto（預設）走混合模式：平常用便宜的 mss 抓螢幕區域，
+    偵測到 ROI 被別的視窗蓋住才改用 PrintWindow。
+    理由與實測數據見 capture/hybrid.py。
 
     沒有指定視窗標題（只給絕對座標）時只能用 mss。
     """
-    if backend in ("auto", "printwindow") and window_title:
-        from .gdi_backend import PrintWindowCapture, can_use_print_window
+    if window_title:
+        if backend == "auto":
+            from .hybrid import HybridCapture
 
-        if backend == "printwindow" or can_use_print_window(window_title):
+            return HybridCapture(window_title, roi)
+        if backend == "printwindow":
+            from .gdi_backend import PrintWindowCapture
+
             return PrintWindowCapture(window_title)
-        if backend == "printwindow":  # pragma: no cover - 上面已 return
-            raise RuntimeError("PrintWindow 後端無法使用")
     if backend in ("auto", "mss"):
         return MssCapture(window_title, capture_region)
     raise ValueError(f"未知的擷取後端：{backend}")

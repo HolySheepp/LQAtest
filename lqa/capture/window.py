@@ -26,6 +26,11 @@ class WindowMinimized(RuntimeError):
 
 if _IS_WINDOWS:
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    # WindowFromPoint 吃的是傳值的 POINT，沒宣告的話 64 位元下會拿到錯的結果
+    _user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    _user32.WindowFromPoint.restype = wintypes.HWND
+    _user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    _user32.GetAncestor.restype = wintypes.HWND
     _WNDENUMPROC = ctypes.WINFUNCTYPE(
         wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
     )
@@ -167,6 +172,42 @@ def is_minimized(hwnd: int) -> bool:
     if not _IS_WINDOWS:
         return False
     return bool(_user32.IsIconic(hwnd))
+
+
+def is_covered(hwnd: int, rect: Rect, samples: int = 5) -> bool:
+    """rect 這塊螢幕區域有沒有被別的視窗蓋住。
+
+    抓螢幕區域（mss）比請視窗自己畫（PrintWindow）便宜得多 ——
+    實測 PrintWindow 會讓模擬器的 CPU 從 0.4% 跳到 5.4%，
+    因為它強迫整個視窗重繪。但抓螢幕區域被蓋住就會抓到蓋在上面的東西，
+    而且完全不會報錯。
+
+    所以先用這個便宜的檢查（WindowFromPoint 只要幾微秒）決定走哪條路。
+    取樣四角與中心，涵蓋大部分實際遮擋情形。
+    """
+    if not _IS_WINDOWS:
+        return False
+    x, y, w, h = rect
+    if w <= 0 or h <= 0:
+        return False
+    inset = 2
+    points = [
+        (x + w // 2, y + h // 2),
+        (x + inset, y + inset),
+        (x + w - inset, y + inset),
+        (x + inset, y + h - inset),
+        (x + w - inset, y + h - inset),
+    ][:max(1, samples)]
+
+    GA_ROOT = 2
+    for px, py in points:
+        point = wintypes.POINT(px, py)
+        top = _user32.WindowFromPoint(point)
+        if not top:
+            return True
+        if _user32.GetAncestor(top, GA_ROOT) != hwnd:
+            return True
+    return False
 
 
 def client_rect_on_screen(hwnd: int) -> Rect:
