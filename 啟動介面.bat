@@ -10,4 +10,7 @@ if not exist "%~dp0.venv\Scripts\pythonw.exe" (
     pause
     exit /b 1
 )
+if not exist "%~dp0lqa\guissets\icon.ico" (
+    "%~dp0.venv\Scripts\python.exe" tools\make_icon.py >nul 2>&1
+)
 start "" "%~dp0.venv\Scripts\pythonw.exe" -m lqa.gui.app

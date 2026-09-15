@@ -20,6 +20,7 @@ from ..record.project import Project
 from ..record.store import SessionStore
 from .settings import HOTKEY_LABELS, GuiSettings
 from .theme import ACCENT_LABELS, build_qss, palette_for
+from .titlebar import FramelessMixin, title_bar_qss
 from .workers import (AnalyseWorker, AutoRecordWorker, HotkeyWatcher,
                       ScriptLoadWorker)
 
@@ -45,7 +46,7 @@ def label(text: str, role: str = "") -> QtWidgets.QLabel:
     return widget
 
 
-class MainWindow(QtWidgets.QMainWindow):
+class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = GuiSettings.load()
@@ -67,6 +68,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.setWindowTitle("LQA Checker")
         self.resize(1180, 760)
+        self._apply_icon()
         self._build()
         self._load_profile()
         self.apply_theme()
@@ -95,11 +97,35 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---------- 版面 ----------
 
+    def _apply_icon(self) -> None:
+        from pathlib import Path as _Path
+
+        icon_path = _Path(__file__).parent / "assets" / "icon.ico"
+        if not icon_path.exists():
+            return
+        icon = QtGui.QIcon(str(icon_path))
+        self.setWindowIcon(icon)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(icon)
+        self._icon = icon
+
     def _build(self) -> None:
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        root = QtWidgets.QVBoxLayout(central)
-        root.setContentsMargins(16, 14, 16, 14)
+        outer = QtWidgets.QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        bar = self.setup_frameless("LQA Checker")
+        if hasattr(self, "_icon"):
+            bar.set_icon(self._icon)
+        outer.addWidget(bar)
+
+        body_widget = QtWidgets.QWidget()
+        outer.addWidget(body_widget, 1)
+        root = QtWidgets.QVBoxLayout(body_widget)
+        root.setContentsMargins(16, 12, 16, 14)
         root.setSpacing(12)
 
         root.addLayout(self._build_header())
@@ -115,9 +141,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_header(self) -> QtWidgets.QHBoxLayout:
         row = QtWidgets.QHBoxLayout()
-        row.addWidget(label("LQA Checker", "title"))
-        row.addSpacing(14)
-
         self.script_label = label("尚未載入翻譯文本", "dim")
         row.addWidget(self.script_label, 1)
 
@@ -277,8 +300,9 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---------- 主題 ----------
 
     def apply_theme(self) -> None:
-        palette = palette_for(self.settings.dark, self.settings.accent)
-        self.setStyleSheet(build_qss(palette))
+        palette = palette_for(self.settings.dark, self.settings.accent,
+                               self.settings.custom_accent)
+        self.setStyleSheet(build_qss(palette) + title_bar_qss(palette))
         self._palette = palette
         self._refresh_hotkey_hint()
         self._repaint_lines()

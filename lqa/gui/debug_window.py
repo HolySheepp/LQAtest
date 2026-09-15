@@ -161,7 +161,8 @@ class DebugWindow(QtWidgets.QWidget):
         root.addLayout(bottom)
 
     def _apply_theme(self) -> None:
-        palette = palette_for(self.settings.dark, self.settings.accent)
+        palette = palette_for(self.settings.dark, self.settings.accent,
+                               self.settings.custom_accent)
         self.setStyleSheet(__import__("lqa.gui.theme", fromlist=["build_qss"])
                            .build_qss(palette))
         for knob in self.knobs.values():

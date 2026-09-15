@@ -8,6 +8,7 @@ venv/
 # 實際的設定與產出，不進版控
 config/profile.json
 config/speakers.csv
+config/gui.json
 sessions/
 reports/
 scripts/
@@ -30,3 +31,6 @@ debug/
 
 # 專案（截圖與進度）
 projects/
+
+# 圖示由 tools/make_icon.py 產生
+!lqa/gui/assets/

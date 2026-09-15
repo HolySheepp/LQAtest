@@ -75,7 +75,7 @@ class DeveloperWindow(QtWidgets.QWidget):
         row.addWidget(close)
         layout.addLayout(row)
 
-        self.setStyleSheet(build_qss(palette_for(settings.dark, settings.accent)))
+        self.setStyleSheet(build_qss(palette_for(settings.dark, settings.accent, settings.custom_accent)))
 
     def _divider(self) -> QtWidgets.QFrame:
         line = QtWidgets.QFrame()

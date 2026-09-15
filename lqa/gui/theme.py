@@ -52,10 +52,25 @@ ACCENT_LABELS = {
 }
 
 
-def palette_for(dark: bool, accent: str) -> Palette:
+CUSTOM = "custom"
+
+
+def palette_for(dark: bool, accent: str, custom: str = "") -> Palette:
     base = DARK if dark else LIGHT
+    if accent == CUSTOM and custom:
+        chosen = custom
+    else:
+        pair = ACCENTS.get(accent, ACCENTS["blue"])
+        chosen = pair[0] if dark else pair[1]
+    return Palette(**{**base.__dict__, "accent": chosen})
+
+
+def swatch(accent: str, dark: bool, custom: str = "") -> str:
+    """副色圓圈要顯示的顏色。"""
+    if accent == CUSTOM:
+        return custom or "#4f8cff"
     pair = ACCENTS.get(accent, ACCENTS["blue"])
-    return Palette(**{**base.__dict__, "accent": pair[0] if dark else pair[1]})
+    return pair[0] if dark else pair[1]
 
 
 def mix(color: str, other: str, ratio: float) -> str:

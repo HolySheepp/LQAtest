@@ -33,6 +33,8 @@ HOTKEY_LABELS = {
 class GuiSettings:
     dark: bool = True
     accent: str = "blue"
+    # 自訂副色（#rrggbb）。accent 設成 custom 時使用
+    custom_accent: str = "#4f8cff"
     hotkeys: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_HOTKEYS))
     script_path: str = ""
     profile_path: str = "config/profile.json"
