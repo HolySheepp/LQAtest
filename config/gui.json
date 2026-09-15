@@ -5,9 +5,10 @@
     "shoot": "f9",
     "skip": "f8",
     "back": "f7",
-    "toggle": "f12"
+    "toggle": "f12",
+    "clear": "f4"
   },
-  "script_path": "C:/Users/francishuang/Downloads/2026_校園活動_主線文本 EN.xlsx",
+  "script_path": "scripts/2026_校園活動_主線文本 EN.xlsx",
   "profile_path": "config/profile.json",
   "speakers_path": "config/speakers.csv",
   "notify_on_finish": true

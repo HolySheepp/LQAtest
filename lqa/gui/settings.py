@@ -19,12 +19,14 @@ DEFAULT_HOTKEYS = {
     # 不要用 F12：Windows 把它保留給偵錯子系統，
     # GetAsyncKeyState 在遊戲有焦點時收不到，實測無效
     "toggle": "f6",     # 開始／結束拍攝
+    "clear": "f4",      # 刪掉目前這條的截圖，退回「未截圖」
 }
 
 HOTKEY_LABELS = {
     "shoot": "截圖",
     "skip": "跳過這條",
     "back": "退回一條",
+    "clear": "清除這條截圖",
     "toggle": "開始／結束",
 }
 

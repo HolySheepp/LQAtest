@@ -16,6 +16,7 @@ from ..compare.normalize import display_key, strip_speaker_id
 from ..config import Profile
 from ..model import CATEGORY_LABEL_ZH, Category
 from ..record.bound import BoundCapture
+from ..record.project import Project
 from ..record.store import SessionStore
 from .settings import HOTKEY_LABELS, GuiSettings
 from .theme import ACCENT_LABELS, build_qss, palette_for
@@ -50,6 +51,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.profile: Optional[Profile] = None
         self.sheets: list = []
         self.expected: list = []
+        self.project: Optional[Project] = None
+        self.sheet: str = ""              # 目前顯示／拍攝的頁簽
+        self.shots: dict[int, str] = {}   # 目前頁簽已有的截圖，切換頁簽時重讀
         self.store: Optional[SessionStore] = None
         self.bound: Optional[BoundCapture] = None
         self.capture = None
@@ -130,6 +134,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sheet_list.setMaximumHeight(118)
         self.sheet_list.itemChanged.connect(self._on_sheet_checked)
         self.sheet_list.currentRowChanged.connect(self._on_sheet_focused)
+        self.sheet_list.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.sheet_list.customContextMenuRequested.connect(self._sheet_menu)
 
         self.lines = QtWidgets.QTreeWidget()
         self.lines.setHeaderLabels(["", "對話ID", "發話者", "英文翻譯"])
@@ -140,6 +147,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lines.setColumnWidth(1, 92)
         self.lines.setColumnWidth(2, 96)
         self.lines.itemDoubleClicked.connect(self._on_line_double_clicked)
+        self.lines.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.lines.customContextMenuRequested.connect(self._line_menu)
 
         return card(
             label("頁簽（勾選要檢查的，點一下切換顯示）", "section"),
@@ -233,6 +243,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_sheets_loaded(self, sheets: list) -> None:
         self.sheets = sheets
+        self.project = Project(self.script_path)
         self.settings.script_path = self.script_path
         self.settings.save()
         self.script_label.setText(
@@ -241,8 +252,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sheet_list.blockSignals(True)
         self.sheet_list.clear()
         for info in sheets:
+            taken = self.project.progress(info.name).taken if self.project else 0
+            done = f"　已拍 {taken}" if taken else ""
             item = QtWidgets.QListWidgetItem(
-                f"{info.name}　{info.line_count} 句　ID {info.first_id} ~ {info.last_id}")
+                f"{info.name}　{info.line_count} 句{done}")
             item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.CheckState.Unchecked)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, info.name)
@@ -266,6 +279,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if row < 0 or self.bound is not None:
             return
         self._show_sheet(self.sheets[row].name)
+        self.analyse_button.setEnabled(bool(self.shots))
 
     def _show_sheet(self, name: str) -> None:
         from ..compare.script_loader import load_script, load_speaker_map
@@ -273,8 +287,34 @@ class MainWindow(QtWidgets.QMainWindow):
         speakers = {}
         if Path(self.settings.speakers_path).exists():
             speakers = load_speaker_map(self.settings.speakers_path)
-        self.expected = load_script(self.script_path, speakers, sheets=[name])
+        try:
+            self.expected = load_script(self.script_path, speakers, sheets=[name])
+        except (OSError, ValueError) as exc:
+            # 例如文本被換掉、頁簽已不存在。是槽函式，丟出去只會印堆疊
+            self.status.setText(f"讀不到頁簽「{name}」：{exc}")
+            return
+        self.sheet = name
+        self._reload_shots()
         self._fill_lines()
+        # 重開軟體後不必先拍攝也能直接解析既有截圖
+        if self.project is not None and self.shots:
+            self.store = self.project.store(name)
+
+    def _reload_shots(self) -> None:
+        """從磁碟重讀目前頁簽的截圖。
+
+        切換頁簽或重開軟體後標記要還在 —— 先前截圖只存在記憶體裡，
+        離開那個頁簽進度就看不見了。
+        """
+        if self.project is None or not self.sheet:
+            self.shots = {}
+            return
+        self.shots = self.project.progress(self.sheet).shots
+        stale = self.project.stale_entries(self.sheet, self.expected)
+        if stale:
+            self.status.setText(
+                f"注意：{len(stale)} 張舊截圖的對話ID 與目前文本對不上"
+                "（文本可能改過），建議清除後重拍")
 
     def _fill_lines(self) -> None:
         self.lines.clear()
@@ -304,17 +344,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_capture()
 
     def start_capture(self) -> None:
-        sheets = self.checked_sheets()
-        if not sheets or self.profile is None:
+        if self.profile is None or self.project is None:
+            return
+        row = self.sheet_list.currentRow()
+        if row < 0:
+            self._error("無法開始拍攝", "請先點選一個頁簽")
             return
         from ..capture.mss_backend import open_capture
-        from ..compare.script_loader import load_script, load_speaker_map
 
-        speakers = {}
-        if Path(self.settings.speakers_path).exists():
-            speakers = load_speaker_map(self.settings.speakers_path)
+        sheet = self.sheets[row].name
+        if sheet != self.sheet:
+            self._show_sheet(sheet)
         try:
-            self.expected = load_script(self.script_path, speakers, sheets=sheets)
             self.capture = open_capture(
                 self.profile.window_title, self.profile.capture_region,
                 self.profile.capture_backend, roi=self.profile.body_roi)
@@ -322,20 +363,23 @@ class MainWindow(QtWidgets.QMainWindow):
             self._error("無法開始拍攝", str(exc))
             return
 
-        self._fill_lines()
-        self.store = SessionStore("sessions", "_".join(sheets)[:40])
-        self.store.write_meta({
-            "mode": "bound",
-            "profile": self.profile.to_dict(),
-            "script": self.script_path,
-            "sheets": sheets,
-        })
+        self.project.write_sheet_meta(sheet, self.profile, [sheet])
+        self.store = self.project.store(sheet)
         self.bound = BoundCapture(self.store, self.capture, len(self.expected))
+        self.bound.state.shots = dict(self.shots)      # 接續既有進度
+        self.bound.move_to(self._first_gap())
 
         self.start_button.setText("結束拍攝")
         self.analyse_button.setEnabled(False)
         self.sheet_list.setEnabled(False)
         self._update_progress()
+
+    def _first_gap(self) -> int:
+        """從第一個還沒拍的條目接續，而不是每次都從頭開始。"""
+        for index in range(len(self.expected)):
+            if index not in self.shots:
+                return index
+        return len(self.expected)
 
     def stop_capture(self) -> None:
         # 不要在這裡關掉熱鍵監聽 —— 關了就再也按不了「開始」
@@ -344,12 +388,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self.capture = None
         if self.store:
             self.store.close()
-        taken = self.bound.state.taken if self.bound else 0
         self.bound = None
+        self._reload_shots()
+        self._refresh_sheet_counts()
         self.start_button.setText("開始拍攝")
         self.sheet_list.setEnabled(True)
-        self.analyse_button.setEnabled(taken > 0)
-        self.progress_label.setText(f"拍攝結束，共 {taken} 張")
+        self.analyse_button.setEnabled(bool(self.shots))
+        self.progress_label.setText(f"拍攝結束，共 {len(self.shots)} 張")
+        self._repaint_lines()
+
+    def _refresh_sheet_counts(self) -> None:
+        if self.project is None:
+            return
+        for i in range(self.sheet_list.count()):
+            item = self.sheet_list.item(i)
+            info = self.sheets[i]
+            taken = self.project.progress(info.name).taken
+            done = f"　已拍 {taken}" if taken else ""
+            item.setText(f"{info.name}　{info.line_count} 句{done}")
 
     def _on_hotkey(self, action: str) -> None:
         if action == "toggle":
@@ -358,18 +414,30 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.bound is None:
             return
         if action == "shoot":
+            index = self.bound.state.cursor
             if self.bound.shoot() is None:
-                self.status.setText("擷取失敗：" + (self.capture.unavailable() or "已拍完所有條目"))
+                self.status.setText(
+                    "擷取失敗：" + (self.capture.unavailable() or "已拍完所有條目"))
+            elif index < len(self.expected):
+                self.project.record_shot(
+                    self.sheet, index, self.expected[index].dialogue_id)
         elif action == "skip":
             self.bound.skip()
         elif action == "back":
             self.bound.back()
+        elif action == "clear":
+            # 刪掉目前這條的截圖，退回「未截圖」
+            index = self.bound.state.cursor
+            self.bound.discard(index)
+            self.project.clear_entry(self.sheet, index)
+            self.status.setText(f"已清除第 {index + 1} 條的截圖")
         self._update_progress()
 
     def _update_progress(self) -> None:
         if self.bound is None:
             return
         state = self.bound.state
+        self.shots = dict(state.shots)
         self.progress.setMaximum(max(1, state.total))
         self.progress.setValue(state.taken)
         self.progress_label.setText(
@@ -395,7 +463,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dim = QtGui.QColor(self._palette.text_dim)
         plain = QtGui.QColor(self._palette.text)
         cursor = self.bound.state.cursor if self.bound else -1
-        shots = self.bound.state.shots if self.bound else {}
+        shots = self.shots
 
         for i in range(self.lines.topLevelItemCount()):
             item = self.lines.topLevelItem(i)
@@ -420,6 +488,55 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setBackground(column, bg)
             item.setBackground(0, bg)
 
+    def _sheet_menu(self, pos: QtCore.QPoint) -> None:
+        item = self.sheet_list.itemAt(pos)
+        if item is None or self.project is None or self.bound is not None:
+            return
+        name = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        taken = self.project.progress(name).taken
+        menu = QtWidgets.QMenu(self)
+        action = menu.addAction(f"清除「{name}」的 {taken} 張截圖")
+        action.setEnabled(taken > 0)
+        if menu.exec(self.sheet_list.mapToGlobal(pos)) is action and taken:
+            if self._confirm(f"要刪掉「{name}」的 {taken} 張截圖嗎？"):
+                removed = self.project.clear_sheet(name)
+                if name == self.sheet:
+                    self._reload_shots()
+                    self._repaint_lines()
+                self._refresh_sheet_counts()
+                self.status.setText(f"已清除「{name}」的 {removed} 張截圖")
+
+    def _line_menu(self, pos: QtCore.QPoint) -> None:
+        item = self.lines.itemAt(pos)
+        if item is None or self.project is None:
+            return
+        index = self.lines.indexOfTopLevelItem(item)
+        menu = QtWidgets.QMenu(self)
+        clear = menu.addAction("清除這條的截圖")
+        clear.setEnabled(index in self.shots)
+        jump = menu.addAction("把游標移到這條")
+        jump.setEnabled(self.bound is not None)
+        chosen = menu.exec(self.lines.mapToGlobal(pos))
+        if chosen is clear and index in self.shots:
+            self.project.clear_entry(self.sheet, index)
+            if self.bound is not None:
+                self.bound.discard(index)
+                self.bound.state.shots.pop(index, None)
+            self._reload_shots()
+            self._refresh_sheet_counts()
+            self._repaint_lines()
+            self.status.setText(f"已清除第 {index + 1} 條的截圖")
+        elif chosen is jump and self.bound is not None:
+            self.bound.move_to(index)
+            self._update_progress()
+
+    def _confirm(self, message: str) -> bool:
+        return QtWidgets.QMessageBox.question(
+            self, "確認", message,
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+        ) == QtWidgets.QMessageBox.StandardButton.Yes
+
     def _on_line_double_clicked(self, item: QtWidgets.QTreeWidgetItem) -> None:
         """雙擊條目把游標移過去，方便補拍。"""
         if self.bound is None:
@@ -436,7 +553,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.start_button.setEnabled(False)
         worker = AnalyseWorker(
             self.store.dir, self.profile, self.script_path,
-            self.checked_sheets(), self.settings.speakers_path, self)
+            [self.sheet], self.settings.speakers_path, self)
         worker.progress.connect(self._on_analysis_progress)
         worker.finished_ok.connect(self._on_analysis_done)
         worker.failed.connect(lambda msg: self._error("解析失敗", msg))
@@ -452,6 +569,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_analysis_done(self, result) -> None:
         self.result = result
+        if self.project is not None and self.sheet:
+            self.project.mark_analysed(self.sheet)
         self.progress_label.setText("解析完成")
         self.analyse_button.setEnabled(True)
         self._fill_issues(result)

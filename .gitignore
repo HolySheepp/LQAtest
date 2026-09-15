@@ -27,3 +27,6 @@ desktop.ini
 # 執行時產生的記錄
 logs/
 debug/
+
+# 專案（截圖與進度）
+projects/

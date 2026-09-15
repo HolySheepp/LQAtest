@@ -24,9 +24,18 @@ from ..model import CapturedLine
 
 
 class SessionStore:
-    def __init__(self, root: str | Path, name: Optional[str] = None):
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        folder = f"{stamp}_{name}" if name else stamp
+    def __init__(self, root: str | Path, name: Optional[str] = None,
+                 timestamped: bool = True):
+        """timestamped=False 時目錄名就是 name，不加時間戳。
+
+        介面版需要固定目錄：切換頁簽或重開軟體之後要能找回同一批截圖，
+        每次都產生新目錄的話進度必然遺失。
+        """
+        if timestamped:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            folder = f"{stamp}_{name}" if name else stamp
+        else:
+            folder = name or "default"
         self.dir = Path(root) / folder
         self.shots_dir = self.dir / "shots"
         self.shots_dir.mkdir(parents=True, exist_ok=True)
