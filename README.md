@@ -9,36 +9,19 @@
 
 ## 發佈一個版本
 
-版本號規則見 `CHANGELOG.md`：最前面是大型更新或翻修，中間是新功能或
-較多修復，最後是小修。
-
 ```
-# 1. 改版本號（唯一的來源）
-#    lqa/__init__.py 的 __version__
-
-# 2. 打標籤。訊息寫成「版本號 一句話」，發佈說明會拿這句當摘要
+# 1. 改 lqa/__init__.py 的 __version__
+# 2. 打標籤
 git tag -a v1.0.1 -m "1.0.1 修正某某"
-
-# 3. 更新版本紀錄並打包
-.venv/Scripts/python.exe tools/make_changelog.py
+# 3. 打包
 .venv/Scripts/python.exe tools/build_app.py
 .venv/Scripts/python.exe tools/build_installer.py
-
-# 4. 產生要貼到 GitHub 的發佈說明
-.venv/Scripts/python.exe tools/release_notes.py
-
-# 5. 推上去
+# 4. 推上去
 git push && git push --tags
 ```
 
-在 GitHub 上 Releases -> Draft a new release，標籤下拉選單裡選剛才那個，
-說明貼 `dist/release-notes-<版本>.md` 的內容，附件上傳 `dist/` 裡的
-`LQA-Checker-<版本>-setup.exe` 與 `LQA-Checker-<版本>-portable.zip`。
-
-發佈說明是從 commit 訊息的內文產生的 —— 那裡本來就寫了「為什麼這樣改」，
-正是看發佈說明的人想知道的。所以 commit 訊息值得好好寫。
-
-要補發舊版本的說明：`tools/release_notes.py v0.16.0`。
+然後在 GitHub 的 Releases 建立發佈，標籤下拉選單裡選剛才那個，
+附件上傳 `dist/` 裡的 setup.exe 與 portable.zip。
 
 ## 打包給同事用
 
