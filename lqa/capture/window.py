@@ -44,6 +44,21 @@ if _IS_WINDOWS:
     )
 
 
+def _missing_window_message(title: str) -> str:
+    """抓不到視窗時該說什麼。
+
+    只講「找不到某某視窗」等於要使用者自己猜。把現在看得到的模擬器
+    視窗列出來，他才知道要去設定裡選哪一個。
+    """
+    found = emulator_windows()
+    if not found:
+        return (f"找不到「{title}」，也沒有偵測到任何模擬器視窗。"
+                "請先開啟模擬器並讓遊戲畫面顯示出來")
+    names = "、".join(f"「{w.title}」" for w in found[:4])
+    return (f"找不到「{title}」。目前開著的模擬器視窗是 {names}，"
+            "請到「設定 → 進階 → 開啟調試視窗」的擷取來源選一個")
+
+
 def ensure_dpi_aware() -> None:
     """關掉 DPI 虛擬化，否則在 125%/150% 縮放下拿到的座標會是錯的。"""
     if not _IS_WINDOWS:
@@ -58,18 +73,29 @@ def ensure_dpi_aware() -> None:
             pass
 
 
+def emulator_windows() -> list["WindowInfo"]:
+    """目前開著的模擬器視窗。"""
+    return [w for w in list_windows() if w.is_emulator]
+
+
 def find_window(title_substring: str) -> Optional[int]:
     """回傳標題含有指定字串的可見視窗 handle。
 
     模擬器實例名稱常常很短（例如「測試」），容易誤中其他視窗，
     所以多個結果時優先挑真正的模擬器程序，其次排除多開管理器。
+
+    標題完全對不到時退回「找一個模擬器視窗」：profile 裡存的是設定者
+    自己的實例名稱，那是跟著人走的東西，換一台機器幾乎一定不一樣。
+    程序名稱才是穩定的識別 —— 沒有這層退路的話，同事拿到軟體第一件事
+    就是「抓不到畫面」，而且看不出要去改哪裡。
     """
     if not _IS_WINDOWS:
         return None
     target = title_substring.lower()
     matches = [w for w in list_windows() if target in w.title.lower()]
     if not matches:
-        return None
+        fallback = emulator_windows()
+        return fallback[0].hwnd if len(fallback) == 1 else None
     for candidate in matches:
         if candidate.is_emulator:
             return candidate.hwnd
@@ -250,7 +276,8 @@ def resolve_region(window_title: Optional[str], fallback: Optional[Rect]) -> Rec
             return client_rect_on_screen(hwnd)
         if fallback is None:
             raise RuntimeError(
-                f"找不到標題含有『{window_title}』的視窗，且 profile 沒有提供 capture_region 備援座標"
+                _missing_window_message(window_title)
+                + "（profile 也沒有提供 capture_region 備援座標）"
             )
     if fallback is None:
         raise RuntimeError("profile 必須提供 window_title 或 capture_region 其中之一")

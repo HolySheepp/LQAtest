@@ -27,6 +27,7 @@ from .window import (
     WindowMinimized,
     client_rect_on_screen,
     ensure_dpi_aware,
+    _missing_window_message,
     find_window,
     is_minimized,
 )
@@ -146,7 +147,7 @@ class PrintWindowCapture(CaptureBackend):
     def _locate(self) -> None:
         hwnd = find_window(self._title)
         if not hwnd:
-            raise RuntimeError(f"找不到標題含有『{self._title}』的視窗")
+            raise RuntimeError(_missing_window_message(self._title))
         if is_minimized(hwnd):
             raise WindowMinimized(
                 f"視窗「{self._title}」已最小化，抓不到畫面。"

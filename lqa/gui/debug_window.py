@@ -99,6 +99,7 @@ class DebugWindow(QtWidgets.QWidget):
         self._resize_timer.timeout.connect(self.render)
         self._build()
         self._apply_theme()
+        self._scan_windows()
         self.refresh_frame()
 
     def _build(self) -> None:
@@ -107,6 +108,19 @@ class DebugWindow(QtWidgets.QWidget):
         root.setSpacing(10)
 
         top = QtWidgets.QHBoxLayout()
+        # 擷取來源要能在介面裡換。profile 裡存的是設定者自己的模擬器
+        # 實例名稱，換一台機器幾乎一定不一樣 —— 而這是拿到軟體之後
+        # 第一個會卡住的地方
+        top.addWidget(QtWidgets.QLabel("擷取來源"))
+        self.window_box = QtWidgets.QComboBox()
+        self.window_box.setMinimumWidth(190)
+        self.window_box.currentIndexChanged.connect(self._on_window)
+        top.addWidget(self.window_box)
+        rescan = QtWidgets.QPushButton("重新掃描")
+        rescan.setToolTip("剛開啟模擬器的話按這個")
+        rescan.clicked.connect(self._scan_windows)
+        top.addWidget(rescan)
+
         self.region_box = QtWidgets.QComboBox()
         for key, label, _roi, _mask in REGION_SPECS:
             self.region_box.addItem(label, key)
@@ -209,6 +223,41 @@ class DebugWindow(QtWidgets.QWidget):
 
     def _is_speaker(self) -> bool:
         return self.region.endswith("speaker")
+
+    def _scan_windows(self) -> None:
+        """列出現在開著的視窗。模擬器排在前面，其餘的也留著備用。"""
+        from ..capture.window import list_windows
+
+        try:
+            windows = list_windows()
+        except Exception as exc:
+            log.warning("列視窗失敗：%s", exc)
+            windows = []
+        windows.sort(key=lambda w: (not w.is_emulator, w.is_emulator_manager,
+                                    w.title.lower()))
+
+        self.window_box.blockSignals(True)
+        self.window_box.clear()
+        current = self.profile.window_title or ""
+        self.window_box.addItem(f"目前設定：{current or '（未設定）'}", current)
+        for info in windows:
+            mark = "（模擬器）" if info.is_emulator else ""
+            self.window_box.addItem(
+                f"{info.title}　{info.process} {info.width}x{info.height}{mark}",
+                info.title)
+        self.window_box.blockSignals(False)
+        if not any(w.is_emulator for w in windows):
+            self.info.setText("沒有偵測到模擬器視窗，請先開啟模擬器再按「重新掃描」")
+
+    def _on_window(self, index: int) -> None:
+        title = self.window_box.itemData(index)
+        if index <= 0 or not title or title == self.profile.window_title:
+            return
+        self.profile.window_title = title
+        # 換了視窗就得重新連線，舊的擷取還綁在原來那個
+        self._release_capture()
+        self._start_grabber()
+        self.info.setText(f"擷取來源改成「{title}」，記得按「儲存設定」")
 
     def _on_region(self, index: int) -> None:
         self.region = self.region_box.itemData(index)

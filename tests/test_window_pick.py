@@ -73,8 +73,30 @@ class TestFindWindow:
         fake_windows([info(20, "LDPlayer Instance", "dnplayer.exe")])
         assert win.find_window("ldplayer") == 20
 
-    def test_no_match_returns_none(self, fake_windows):
-        fake_windows([info(20, "測試", "dnplayer.exe")])
+    def test_falls_back_to_the_only_emulator_when_the_title_misses(self, fake_windows):
+        """profile 存的是設定者自己的實例名稱，換一台機器幾乎一定不一樣。
+
+        程序名稱才是穩定的識別。沒有這層退路的話，同事拿到軟體第一件事
+        就是「抓不到畫面」，而且看不出要去改哪裡。
+        """
+        fake_windows([info(20, "朋友的模擬器", "dnplayer.exe")])
+        assert win.find_window("測試") == 20
+
+    def test_does_not_guess_between_two_emulators(self, fake_windows):
+        """開了兩個實例就不能替使用者猜，猜錯會錄到另一個視窗的內容。"""
+        fake_windows([
+            info(20, "實例一", "dnplayer.exe"),
+            info(21, "實例二", "dnplayer.exe"),
+        ])
+        assert win.find_window("測試") is None
+
+    def test_no_fallback_to_the_multi_instance_manager(self, fake_windows):
+        """多開管理器抓得到視窗但裡面沒有遊戲畫面。"""
+        fake_windows([info(10, "LDMultiPlayer", "dnmultiplayerex.exe")])
+        assert win.find_window("測試") is None
+
+    def test_no_match_and_no_emulator_returns_none(self, fake_windows):
+        fake_windows([info(20, "記事本", "notepad.exe")])
         assert win.find_window("不存在的視窗") is None
 
     def test_empty_window_list(self, fake_windows):
