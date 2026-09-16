@@ -49,7 +49,9 @@ headless 版沒有 GUI，`calibrate` 的框選視窗與遮罩預覽會開不起�
 LQA/
   config/
     profile.json      calibrate 產生，不要手動編（可手動微調門檻）
-    speakers.csv      發話者中英對照表，自己建，格式見 speakers.example.csv
+    speakers.csv      發話者中英對照表，自己建
+                      xlsx 第一欄中文第二欄英文；txt / md / csv 用逗號分開
+                      範例見 speakers.example.csv 與 speakers.example.txt
   scripts/
     你的翻譯文本.xlsx   從 Google 試算表下載成 xlsx 放這裡
   sessions/           截圖與辨識結果，程式自動建立

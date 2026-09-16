@@ -115,7 +115,14 @@ class SettingsDialog(QtWidgets.QDialog):
             layout, "翻譯文本", settings.script_path,
             "翻譯文本 (*.xlsx *.xlsm *.csv *.tsv)")
         self.speakers_edit = self._path_row(
-            layout, "發話者對照表", settings.speakers_path)
+            layout, "發話者對照表", settings.speakers_path,
+            "對照表 (*.xlsx *.xlsm *.csv *.tsv *.txt *.md)")
+        speaker_hint = QtWidgets.QLabel(
+            "xlsx 就第一欄中文、第二欄英文；txt / md / csv 一行一個，"
+            "中文在前英文在後用逗號分開")
+        speaker_hint.setProperty("role", "hint")
+        speaker_hint.setWordWrap(True)
+        layout.addWidget(speaker_hint)
 
         layout.addWidget(self._section("解析完成時"))
         self.notify_check = QtWidgets.QCheckBox("顯示系統通知")

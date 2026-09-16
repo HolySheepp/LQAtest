@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -121,6 +122,37 @@ SPEAKER_EN_ALIASES = (
 )
 
 
+# 對照表可以用的純文字格式。xlsx 走另一條路
+SPEAKER_TEXT_SUFFIXES = (".csv", ".tsv", ".txt", ".md")
+# 一行裡用來分開中英文的符號。中文輸入法打出來的逗號是全形，
+# 只認半形只會讓人打了一份看起來沒問題、卻一個都對不上的表
+SPEAKER_SEPARATORS = re.compile(r"[,，	;；]")
+
+
+def _read_speaker_text(path: Path) -> list[list[str]]:
+    """讀手寫的對照表：一行一個名字，中文在前、英文在後。
+
+    這份表是人手打的，不是程式產生的，所以盡量收：
+      - 半形或全形的逗號、分號、tab 都算分隔
+      - markdown 的表格（| 中文 | English |）直接認得，連分隔線一起跳過
+      - 以 # 開頭的行當成標題或註解略過
+      - 空行略過
+    """
+    rows: list[list[str]] = []
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if set(line) <= set("|-: "):
+            continue                    # markdown 表格的分隔線
+        if "|" in line:
+            parts = line.strip("|").split("|")
+        else:
+            parts = SPEAKER_SEPARATORS.split(line)
+        rows.append([cell.strip() for cell in parts])
+    return rows
+
+
 def _speaker_columns(header: Sequence[Any]) -> tuple[int, int] | None:
     """從標題列找出中文名與英文名各在第幾欄。找不到就回 None。"""
     zh_idx = en_idx = None
@@ -142,8 +174,14 @@ def load_speaker_map(path: str | Path | None) -> dict[str, str]:
     遊戲畫面顯示的是英文，所以要先用中文名查出對應英文名，
     再拿去和畫面 OCR 到的名字比對。
 
-    支援 csv / tsv / xlsx。優先靠標題文字找中英兩欄，
-    找不到標題就退回「第一欄中文、第二欄英文」。
+    格式隨便挑：
+
+      xlsx / xlsm      第一欄中文、第二欄英文
+      csv / txt / md   一行一個，中文在前、英文在後，用逗號分開
+                       （全形逗號、分號、tab、markdown 表格也認）
+
+    兩種都會先看有沒有標題列，有的話靠標題文字找中英兩欄，
+    沒有就當成「第一欄中文、第二欄英文」。
     """
     if not path:
         return {}
@@ -151,11 +189,16 @@ def load_speaker_map(path: str | Path | None) -> dict[str, str]:
     if not p.exists():
         raise FileNotFoundError(f"找不到發話者對照表：{p}")
 
-    if p.suffix.lower() in (".xlsx", ".xlsm"):
+    suffix = p.suffix.lower()
+    if suffix in (".xlsx", ".xlsm"):
         sheets = _read_xlsx_sheets(p)
         rows = next(iter(sheets.values())) if sheets else []
+    elif suffix in SPEAKER_TEXT_SUFFIXES:
+        rows = _read_speaker_text(p)
     else:
-        rows = _read_delimited(p)
+        raise ValueError(
+            f"不支援的對照表格式：{p.suffix}"
+            "（可用 xlsx、xlsm、csv、tsv、txt、md）")
 
     rows = [r for r in rows if any(str(c).strip() for c in r if c is not None)]
     if not rows:

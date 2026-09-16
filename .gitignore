@@ -18,7 +18,7 @@ scripts/
 *.xlsm
 *.csv
 *.tsv
-!config/*.example.csv
+!config/*.example.*
 
 .vscode/
 .idea/

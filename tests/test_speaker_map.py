@@ -173,3 +173,62 @@ class TestUsedAsAnswerKey:
         result = compare(expected, captured)
         assert not [i for i in result.problems if i.category is Category.SPEAKER]
         assert unknown_speakers(expected), "應該要講得出對照表缺了哪些名字"
+
+
+class TestHandWrittenFormats:
+    """這份表是人手打的，不是程式產生的。
+
+    打完一份看起來沒問題、卻一個名字都對不上，是最難自己查出來的錯 ——
+    而且症狀是「發話者完全沒被檢查」，安靜得像是本來就沒問題。
+    所以收的格式盡量寬。
+    """
+
+    def write(self, tmp_path, name: str, text: str):
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return load_speaker_map(path)
+
+    EXPECTED = {"蘇青": "Suqing", "涅維": "Nev"}
+
+    def test_plain_txt_with_half_width_commas(self, tmp_path):
+        assert self.write(tmp_path, "a.txt", "蘇青,Suqing\n涅維,Nev\n") == self.EXPECTED
+
+    def test_full_width_comma(self, tmp_path):
+        """中文輸入法打出來的逗號是全形，只認半形等於叫人自己踩坑。"""
+        assert self.write(tmp_path, "a.txt", "蘇青，Suqing\n涅維，Nev\n") == self.EXPECTED
+
+    def test_markdown_table(self, tmp_path):
+        """從文件裡貼出來最常見的就是表格，連分隔線一起認。"""
+        text = ("# 發話者對照\n\n| 中文 | English |\n|---|---|\n"
+                "| 蘇青 | Suqing |\n| 涅維 | Nev |\n")
+        assert self.write(tmp_path, "a.md", text) == self.EXPECTED
+
+    def test_markdown_without_a_table(self, tmp_path):
+        assert self.write(tmp_path, "a.md", "蘇青, Suqing\n\n涅維 , Nev\n") == self.EXPECTED
+
+    def test_comment_lines_are_skipped(self, tmp_path):
+        assert self.write(tmp_path, "a.txt",
+                          "# 之後再補\n蘇青,Suqing\n涅維,Nev\n") == self.EXPECTED
+
+    def test_spaces_around_the_names_are_trimmed(self, tmp_path):
+        assert self.write(tmp_path, "a.txt",
+                          "  蘇青 ,  Suqing  \n涅維,Nev\n") == self.EXPECTED
+
+    def test_tabs_still_work(self, tmp_path):
+        assert self.write(tmp_path, "a.tsv",
+                          "蘇青\tSuqing\n涅維\tNev\n") == self.EXPECTED
+
+    def test_xlsx_is_first_column_chinese_second_english(self, tmp_path):
+        assert load_speaker_map(
+            write_xlsx(tmp_path, [["蘇青", "Suqing"], ["涅維", "Nev"]])) == self.EXPECTED
+
+    def test_names_without_an_english_side_are_skipped(self, tmp_path):
+        """只填了一半的行不算數，但不該讓整份表讀不出來。"""
+        assert self.write(tmp_path, "a.txt",
+                          "蘇青,Suqing\n校長,\n涅維,Nev\n") == self.EXPECTED
+
+    def test_unsupported_extension_says_what_is_allowed(self, tmp_path):
+        path = tmp_path / "a.docx"
+        path.write_text("蘇青,Suqing", encoding="utf-8")
+        with pytest.raises(ValueError, match="xlsx"):
+            load_speaker_map(path)
