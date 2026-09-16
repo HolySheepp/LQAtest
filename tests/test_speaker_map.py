@@ -149,3 +149,27 @@ class TestUsedAsAnswerKey:
         assert len(flagged) == 1
         assert flagged[0].dialogue_id == "80208003"
         assert "Suqing" in flagged[0].detail and "Nev" in flagged[0].detail
+
+    def test_blank_english_column_turns_the_check_off_silently(self, tmp_path,
+                                                               sample_xlsx):
+        """對照表有名字但英文欄空白時，發話者根本不會被檢查。
+
+        這是刻意的（沒有正確答案就不該亂報錯），但從介面上完全看不出來 ——
+        使用者會以為發話者已經查過了。unknown_speakers 就是用來提醒這件事的，
+        所以這裡一併確認它講得出缺了哪些。
+        """
+        from lqa.compare.classify import compare
+        from lqa.compare.script_loader import load_script, unknown_speakers
+        from lqa.model import CapturedLine, Category
+
+        mapping = load_speaker_map(
+            write_csv(tmp_path, [["中文名", "英文名"], ["蘇青", ""], ["涅維", ""]]))
+        expected = load_script(sample_xlsx, mapping)
+        captured = [
+            CapturedLine(seq=i, timestamp=0.0, body_text=e.target_en,
+                         speaker_text="CompletelyWrongName(999)")
+            for i, e in enumerate(expected)
+        ]
+        result = compare(expected, captured)
+        assert not [i for i in result.problems if i.category is Category.SPEAKER]
+        assert unknown_speakers(expected), "應該要講得出對照表缺了哪些名字"

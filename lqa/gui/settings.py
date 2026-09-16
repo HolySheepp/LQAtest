@@ -22,8 +22,8 @@ DEFAULT_HOTKEYS = {
 
 HOTKEY_LABELS = {
     "shoot": "截圖",
-    "skip": "跳過這條",
-    "back": "退回一條",
+    "skip": "下一條",
+    "back": "上一條",
     "clear": "清除這條截圖",
     "toggle": "開始／結束",
 }
@@ -40,6 +40,8 @@ class GuiSettings:
     profile_path: str = "config/profile.json"
     speakers_path: str = "config/speakers.csv"
     notify_on_finish: bool = True
+    # 解析完成時播的音效，就是 assets/sounds 裡的檔名。空字串代表不播
+    sound_on_finish: str = "啵_Bop"
     # 開發者模式：主視窗多出實驗中的自動錄製
     developer_mode: bool = False
     auto_poll_ms: int = 60

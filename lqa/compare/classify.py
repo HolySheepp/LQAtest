@@ -27,6 +27,9 @@ class CompareConfig:
     truncate_len_ratio: float = 0.92   # 畫面長度 / 譯文長度 低於此值才算超框
     truncate_min_chars: int = 6        # 太短的畫面文字不判超框，避免 OCR 失敗誤報
     speaker_threshold: float = 0.85    # 發話者名相似度門檻
+    # 綁定模式下，不一致的句子要像到這個程度才算「其實是文本裡的另一句」。
+    # 抓高一點：寧可報成不一致，也不要隨便指認成別句誤導使用者
+    order_threshold: float = 0.92
     untranslated_cjk_ratio: float = 0.05  # CJK 佔比達此值才算未翻譯
     check_speaker: bool = True
     align: AlignConfig = field(default_factory=AlignConfig)
@@ -98,6 +101,29 @@ def _speaker_issue(
         expected_order=exp.order + 1,
         actual_order=cap.seq + 1,
     )
+
+
+def _find_elsewhere(
+    text: str,
+    expected: Sequence[ExpectedLine],
+    skip: int,
+    threshold: float,
+) -> tuple[ExpectedLine | None, float]:
+    """畫面上這句其實是文本裡的哪一條。
+
+    綁定模式下截圖是釘死在某個條目上的，所以序列對齊那套「重排」判斷
+    完全用不上 —— 不處理的話，遊戲順序和文本不同、或使用者按鍵時
+    游標沒對上，全部都只會報成「不一致」，看不出到底發生什麼事。
+    這裡回頭在整份文本裡找，找得到就講得出是哪一句。
+    """
+    best, best_score = None, 0.0
+    for index, candidate in enumerate(expected):
+        if index == skip or not candidate.target_en:
+            continue
+        score = nz.similarity(candidate.target_en, text)
+        if score > best_score:
+            best, best_score = candidate, score
+    return (best, best_score) if best_score >= threshold else (None, 0.0)
 
 
 def _guess_untranslated_source(
@@ -248,8 +274,20 @@ def compare(
                 len(nz.display_key(cap.body_text)):
             ].strip()
         else:
-            base.category = Category.MISMATCH
-            base.detail = f"與譯文不一致（相似度 {score:.0%}）"
+            other, other_score = (
+                _find_elsewhere(cap.body_text, expected, pair.exp_idx,
+                                cfg.order_threshold)
+                if bound else (None, 0.0))
+            if other is not None:
+                base.category = Category.ORDER
+                base.detail = (
+                    f"畫面顯示的是文本第 {other.order + 1} 句"
+                    f"（{other.dialogue_id}，相似度 {other_score:.0%}）—— "
+                    "可能是遊戲順序和文本不同，或截圖時游標沒對上")
+                base.extras["actual_dialogue_id"] = other.dialogue_id
+            else:
+                base.category = Category.MISMATCH
+                base.detail = f"與譯文不一致（相似度 {score:.0%}）"
 
         issues.append(base)
 

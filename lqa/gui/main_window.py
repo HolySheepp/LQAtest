@@ -232,10 +232,6 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         pick.clicked.connect(self._pick_script)
         row.addWidget(pick)
 
-        debug = QtWidgets.QPushButton("調試")
-        debug.clicked.connect(self._open_debug)
-        row.addWidget(debug)
-
         gear = QtWidgets.QPushButton("設定")
         gear.clicked.connect(self._open_settings)
         row.addWidget(gear)
@@ -252,7 +248,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
 
         self.lines = QtWidgets.QTreeWidget()
         self.lines.setHeaderLabels(
-            ["", "對話ID", "發話者", "英文翻譯", "遊戲內文", "疑慮分類"])
+            ["", "對話ID", "發話者", "翻譯文本", "遊戲內文", "疑慮分類"])
         self.lines.setRootIsDecorated(False)
         self.lines.setUniformRowHeights(True)
         self.lines.setItemDelegate(RowTint(self.lines))
@@ -297,7 +293,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self._refresh_filter_labels()
 
         return card(
-            label("頁簽（勾選要檢查的，點一下切換顯示）", "section"),
+            label("檔案", "section"),
             self.sheet_list,
             head,
             self.lines,
@@ -358,7 +354,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self._stop_auto_record()
             return
         if self.bound is None:
-            self._error("無法自動錄製", "請先按「開始拍攝」，自動錄製會填進目前的游標位置")
+            self._error("無法自動錄製", "請先按「開始錄製」，自動錄製會填進目前的游標位置")
             return
         worker = AutoRecordWorker(self.profile, self.settings.auto_poll_ms, self)
         worker.line_ready.connect(self._on_auto_line)
@@ -399,7 +395,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.progress = QtWidgets.QProgressBar()
         self.progress.setTextVisible(False)
 
-        self.start_button = QtWidgets.QPushButton("開始拍攝")
+        self.start_button = QtWidgets.QPushButton("開始錄製")
         self.start_button.setProperty("role", "primary")
         self.start_button.clicked.connect(self.toggle_capture)
         self.start_button.setEnabled(False)
@@ -409,7 +405,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.analyse_button.setEnabled(False)
 
         self.auto_button = QtWidgets.QPushButton("自動錄製")
-        self.auto_button.setToolTip("實驗中：偵測打字結束並自動拍攝")
+        self.auto_button.setToolTip("實驗中：偵測打字結束並自動截圖")
         self.auto_button.clicked.connect(self.toggle_auto_record)
         self.auto_button.setVisible(False)
 
@@ -422,7 +418,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.hotkey_hint.setWordWrap(True)
 
         capture_card = card(
-            label("拍攝", "section"),
+            label("錄製", "section"),
             self.progress_label,
             self.progress,
             buttons,
@@ -430,6 +426,11 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         )
 
         self.detail_title = label("選一條看細節", "dim")
+        # 發話者各自放在自己那一欄的標題與內容之間。
+        # 文本的發話者是從翻譯檔讀的，畫面的是從遊戲裡認出來的，
+        # 兩者本來就可能不一樣 —— 並排才看得出哪裡對不上
+        self.detail_expected_speaker = label("", "dim")
+        self.detail_actual_speaker = label("", "dim")
         self.detail_expected = self._detail_box()
         self.detail_actual = self._detail_box()
         self.detail_verdict = label("", "")
@@ -440,9 +441,11 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
 
         detail_card = card(
             self.detail_title,
-            label("英文翻譯（正確答案）", "section"),
+            label("翻譯文本", "section"),
+            self.detail_expected_speaker,
             self.detail_expected,
             label("遊戲內文", "section"),
+            self.detail_actual_speaker,
             self.detail_actual,
             label("判定", "section"),
             self.detail_verdict,
@@ -510,7 +513,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.settings.script_path = self.script_path
         self.settings.save()
         self.script_label.setText(
-            f"{Path(self.script_path).name}　共 {len(sheets)} 個對白頁簽")
+            f"{Path(self.script_path).name}　共 {len(sheets)} 個頁簽")
 
         self.sheet_list.blockSignals(True)
         self.sheet_list.clear()
@@ -648,6 +651,8 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         index = self.lines.indexOfTopLevelItem(item) if item is not None else -1
         if index < 0 or index >= len(self.expected):
             self.detail_title.setText("選一條看細節")
+            self._set_speaker_label(self.detail_expected_speaker, "", "")
+            self._set_speaker_label(self.detail_actual_speaker, "", "")
             self.detail_expected.setPlainText("")
             self.detail_actual.setPlainText("")
             self.detail_verdict.setText("")
@@ -655,19 +660,17 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             return
 
         line = self.expected[index]
-        speaker = line.speaker_en or line.speaker_zh or "（旁白）"
-        self.detail_title.setText(
-            f"第 {index + 1} 條　{line.dialogue_id}　{speaker}")
+        self.detail_title.setText(f"第 {index + 1} 條　{line.dialogue_id}")
+        self._set_speaker_label(self.detail_expected_speaker,
+                                line.speaker_en or line.speaker_zh or "（旁白）",
+                                self._palette.text_dim)
         self.detail_expected.setPlainText(display_key(line.target_en))
 
         row = self.rows.get(index)
         captured = row.captured if row is not None else None
+        self._set_actual_speaker(row, captured)
         if captured is not None:
-            text = display_key(captured.body_text)
-            heard = strip_speaker_id(captured.speaker_text)
-            if heard:
-                text = f"{heard}：{text}"
-            self.detail_actual.setPlainText(text)
+            self.detail_actual.setPlainText(display_key(captured.body_text))
         elif row is not None:
             self.detail_actual.setPlainText("（未截圖）")
         elif index in self.shots:
@@ -677,6 +680,39 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
 
         self.detail_verdict.setText(self._verdict_text(row))
         self.detail_shot.set_shot(self._shot_pixmap(captured, index))
+
+    def _set_actual_speaker(self, row, captured) -> None:
+        """畫面上認出來的發話者。
+
+        和文本那邊分開顯示，不要塞進內文開頭 —— 這兩個是不同來源的東西，
+        混在一起就看不出是誰跟誰對不上。對不上時標紅，那正是要看的重點。
+        """
+        if captured is None:
+            self._set_speaker_label(self.detail_actual_speaker, "", "")
+            return
+        wrong = row is not None and any(
+            issue.category is Category.SPEAKER for issue in row.issues)
+        self._set_speaker_label(
+            self.detail_actual_speaker,
+            strip_speaker_id(captured.speaker_text) or "（畫面沒讀到發話者）",
+            self._palette.danger if wrong else self._palette.text_dim)
+
+    @staticmethod
+    def _set_speaker_label(widget, text: str, colour: str) -> None:
+        """沒有發話者就整行收掉，不要留一條空白帶。"""
+        widget.setVisible(bool(text))
+        widget.setText(text)
+        if colour:
+            widget.setStyleSheet(f"color: {colour};")
+
+    def _unmapped_speakers(self) -> list[str]:
+        """文本有發話者、但對照表給不出英文名的那些中文名。"""
+        from ..compare.script_loader import unknown_speakers
+
+        try:
+            return sorted(unknown_speakers(self.expected))
+        except Exception:      # 提醒而已，壞掉不該影響解析結果
+            return []
 
     def _verdict_text(self, row) -> str:
         if row is None:
@@ -779,7 +815,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             return
         row = self.sheet_list.currentRow()
         if row < 0:
-            self._error("無法開始拍攝", "請先點選一個頁簽")
+            self._error("無法開始錄製", "請先點選一個頁簽")
             return
         from ..capture.mss_backend import open_capture
 
@@ -791,7 +827,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
                 self.profile.window_title, self.profile.capture_region,
                 self.profile.capture_backend, roi=self.profile.watch_roi())
         except Exception as exc:
-            self._error("無法開始拍攝", str(exc))
+            self._error("無法開始錄製", str(exc))
             return
 
         self.project.write_sheet_meta(sheet, self.profile, [sheet])
@@ -800,7 +836,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.bound.state.shots = dict(self.shots)      # 接續既有進度
         self.bound.move_to(self._first_gap())
 
-        self.start_button.setText("結束拍攝")
+        self.start_button.setText("結束錄製")
         self.analyse_button.setEnabled(False)
         self.sheet_list.setEnabled(False)
         self._update_progress()
@@ -823,10 +859,10 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.bound = None
         self._reload_shots()
         self._refresh_sheet_counts()
-        self.start_button.setText("開始拍攝")
+        self.start_button.setText("開始錄製")
         self.sheet_list.setEnabled(True)
         self.analyse_button.setEnabled(bool(self.shots))
-        self.progress_label.setText(f"拍攝結束，共 {len(self.shots)} 張")
+        self.progress_label.setText(f"錄製結束，共 {len(self.shots)} 張")
         self._repaint_lines()
 
     def _refresh_sheet_counts(self) -> None:
@@ -1126,6 +1162,17 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             f"共 {len(result.expected)} 條，疑慮 {flagged} 筆，未截圖 {skipped} 條　"
             + "　".join(f"{CATEGORY_LABEL_ZH[c]} {counts[c.value]}"
                         for c in Category if counts.get(c.value)))
+        from . import sound
+
+        sound.play(self.settings.sound_on_finish)
+        missing = self._unmapped_speakers()
+        if missing:
+            # 對照表沒有英文名就沒有正確答案，發話者那一項等於沒查 ——
+            # 不講的話使用者會以為已經檢查過了
+            self.status.setText(
+                self.status.text()
+                + f"　發話者未檢查（對照表缺 {len(missing)} 個英文名："
+                + "、".join(missing[:4]) + ("…" if len(missing) > 4 else "") + "）")
         if self.settings.notify_on_finish:
             self._notify("解析完成",
                          f"{len(result.expected)} 條中有 {flagged} 筆疑慮"
@@ -1159,7 +1206,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self.apply_theme()
             self._start_hotkeys()      # 熱鍵可能被改過，重新掛上
 
-    def _open_debug(self) -> None:
+    def open_debug(self) -> None:
         from .debug_window import DebugWindow
 
         if self.profile is None:

@@ -150,29 +150,62 @@ class TestBoundCompare:
     # 「跳過的條目怎麼分類」改由 TestSkippedIsNotMissing 涵蓋：
     # 綁定模式下那是「未截圖」而不是「遊戲中沒這句」。
 
+    def _shot_of_another_line(self, sample_xlsx):
+        """第 2 條拍到的其實是第 3 條的內容。"""
+        from lqa.compare.classify import compare
+        from lqa.compare.script_loader import load_script
+
+        expected = load_script(sample_xlsx)
+        texts = [e.target_en for e in expected]
+        texts[2] = expected[3].target_en
+        result = compare(expected, self._lines(texts))
+        issues = {i.dialogue_id: i for i in result.problems}
+        return expected, issues
+
     def test_similar_neighbours_are_not_swapped(self, sample_xlsx):
-        """逐條配對的關鍵好處：位置綁死，不會被相似句子拉走。"""
+        """逐條配對的關鍵好處：位置綁死，不會被相似句子拉走。
+
+        被點名的必須是「該拍卻沒對上」的那一條本身，
+        而不是安靜地改跟隔壁那句對答案然後放行。
+        """
+        expected, issues = self._shot_of_another_line(sample_xlsx)
+        assert expected[2].dialogue_id in issues
+
+    def test_it_says_which_line_the_screen_actually_showed(self, sample_xlsx):
+        """只說「不一致」等於要使用者自己回頭在整份文本裡找。
+
+        畫面上那句就在文本裡，只是位置不同 —— 講得出是哪一句，
+        才知道是遊戲順序不同還是截圖時游標沒對上。
+        """
+        from lqa.model import Category
+
+        expected, issues = self._shot_of_another_line(sample_xlsx)
+        issue = issues[expected[2].dialogue_id]
+        assert issue.category is Category.ORDER
+        assert issue.extras["actual_dialogue_id"] == expected[3].dialogue_id
+
+    def test_a_line_that_is_nowhere_in_the_script_stays_a_mismatch(self, sample_xlsx):
+        """找不到出處就老實說不一致，不要硬指認成某一句。"""
         from lqa.compare.classify import compare
         from lqa.compare.script_loader import load_script
         from lqa.model import Category
 
         expected = load_script(sample_xlsx)
         texts = [e.target_en for e in expected]
-        texts[2] = expected[3].target_en      # 第 2 條拍到第 3 條的內容
-        captured = self._lines(texts)
-        result = compare(expected, captured)
-        flagged = {i.dialogue_id for i in result.problems
-                   if i.category is Category.MISMATCH}
-        assert expected[2].dialogue_id in flagged
+        texts[2] = "Something that appears in no part of this script at all."
+        result = compare(expected, self._lines(texts))
+        issue = next(i for i in result.problems
+                     if i.dialogue_id == expected[2].dialogue_id)
+        assert issue.category is Category.MISMATCH
 
-    def test_order_issues_are_impossible_when_bound(self, sample_xlsx):
+    def test_no_order_issues_when_every_shot_is_on_target(self, sample_xlsx):
+        """全部拍對時不該冒出順序問題 —— 那會把使用者送去追查不存在的錯。"""
         from lqa.compare.classify import compare
         from lqa.compare.script_loader import load_script
         from lqa.model import Category
 
         expected = load_script(sample_xlsx)
-        captured = self._lines([e.target_en for e in expected])
-        result = compare(expected, captured)
+        result = compare(expected, self._lines([e.target_en for e in expected]))
         assert not [i for i in result.issues if i.category is Category.ORDER]
 
 

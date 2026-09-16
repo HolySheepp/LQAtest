@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..hotkey import VK_CODES
+from . import sound
 from .settings import HOTKEY_LABELS, GuiSettings
 from .theme import ACCENT_LABELS, ACCENTS, CUSTOM, swatch
 
@@ -90,7 +91,7 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addLayout(accent_row)
         self._refresh_dots()
 
-        layout.addWidget(self._section("熱鍵（全域，焦點在模擬器上也有效）"))
+        layout.addWidget(self._section("快捷鍵"))
         self.key_boxes: dict[str, QtWidgets.QComboBox] = {}
         names = sorted(VK_CODES)
         for action, text in HOTKEY_LABELS.items():
@@ -105,20 +106,47 @@ class SettingsDialog(QtWidgets.QDialog):
             row.addWidget(box, 1)
             layout.addLayout(row)
 
-        layout.addWidget(self._section("檔案"))
+        layout.addWidget(self._section("路徑"))
         self.speakers_edit = self._path_row(
             layout, "發話者對照表", settings.speakers_path)
         self.profile_edit = self._path_row(
             layout, "擷取設定 profile", settings.profile_path)
 
-        self.notify_check = QtWidgets.QCheckBox("解析完成時顯示系統通知")
+        layout.addWidget(self._section("解析完成時"))
+        self.notify_check = QtWidgets.QCheckBox("顯示系統通知")
         self.notify_check.setChecked(settings.notify_on_finish)
         layout.addWidget(self.notify_check)
+
+        sound_row = QtWidgets.QHBoxLayout()
+        sound_row.addWidget(QtWidgets.QLabel("音效"))
+        self.sound_box = QtWidgets.QComboBox()
+        self.sound_box.addItem("不播放", sound.NONE)
+        for name in sound.available():
+            self.sound_box.addItem(name, name)
+        index = self.sound_box.findData(settings.sound_on_finish)
+        self.sound_box.setCurrentIndex(max(0, index))
+        self.sound_box.currentIndexChanged.connect(self._on_sound)
+        sound_row.addWidget(self.sound_box, 1)
+        self.preview_button = QtWidgets.QPushButton("試聽")
+        self.preview_button.clicked.connect(
+            lambda: sound.play(self.sound_box.currentData()))
+        self.preview_button.setEnabled(bool(settings.sound_on_finish))
+        sound_row.addWidget(self.preview_button)
+        layout.addLayout(sound_row)
+
+        layout.addWidget(self._section("進階"))
+        debug_button = QtWidgets.QPushButton("開啟調試視窗（調整取字範圍與門檻）")
+        debug_button.clicked.connect(self._open_debug)
+        layout.addWidget(debug_button)
 
         layout.addStretch(1)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok).setText("確定")
+        buttons.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -172,6 +200,25 @@ class SettingsDialog(QtWidgets.QDialog):
                                   self.settings.custom_accent))
             dot.setChecked(key == self.settings.accent)
 
+    def _on_sound(self, _index: int) -> None:
+        name = self.sound_box.currentData()
+        self.preview_button.setEnabled(bool(name))
+        # 選了就放來聽，不必再按一次試聽
+        if name:
+            sound.play(name)
+
+    def _open_debug(self) -> None:
+        """調試視窗不從主畫面進來，避免常用區塊被很少用的東西佔位。
+
+        這個對話框是 modal，調試視窗開在上面會被擋住，所以先收掉自己 ——
+        用 accept 而不是 reject，剛才改的設定要留住。
+        """
+        parent = self.parent()
+        self._gather()
+        self.accept()
+        if parent is not None and hasattr(parent, "open_debug"):
+            QtCore.QTimer.singleShot(0, parent.open_debug)
+
     def _on_key(self, action: str, value: str) -> None:
         self.settings.hotkeys[action] = value
 
@@ -181,8 +228,13 @@ class SettingsDialog(QtWidgets.QDialog):
             parent.apply_theme()
             self.setStyleSheet(parent.styleSheet())
 
-    def _accept(self) -> None:
+    def _gather(self) -> None:
+        """把輸入框的內容收回設定。外觀那幾項是即時套用的，不在這裡。"""
         self.settings.speakers_path = self.speakers_edit.text().strip()
         self.settings.profile_path = self.profile_edit.text().strip()
         self.settings.notify_on_finish = self.notify_check.isChecked()
+        self.settings.sound_on_finish = self.sound_box.currentData()
+
+    def _accept(self) -> None:
+        self._gather()
         self.accept()
