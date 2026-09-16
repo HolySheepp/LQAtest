@@ -130,6 +130,37 @@ class Project:
         self.forget_shot(sheet, index)
         return existed
 
+    # --- 人工判定 ---
+
+    def verdicts(self, sheet: str) -> dict[int, str]:
+        """使用者手動改過的判定。條目索引 -> 分類代號。"""
+        entry = self._state["sheets"].get(sheet, {})
+        stored = entry.get("verdicts", {})
+        return {int(k): v["category"] for k, v in stored.items()
+                if isinstance(v, dict) and v.get("category")}
+
+    def set_verdict(self, sheet: str, index: int, category: str | None,
+                    dialogue_id: str = "") -> None:
+        """記下（或取消）一條的人工判定。
+
+        連對話ID一起存：文本中間插入或刪除句子時索引會整段位移，
+        有這個才判斷得出這筆判定是不是已經指到別條去了。
+        """
+        entry = self._state["sheets"].setdefault(sheet, {"dialogue_ids": {}})
+        verdicts = entry.setdefault("verdicts", {})
+        if category:
+            verdicts[str(index)] = {"category": category,
+                                    "dialogue_id": dialogue_id}
+        else:
+            verdicts.pop(str(index), None)
+        self.save()
+
+    def clear_verdicts(self, sheet: str) -> None:
+        entry = self._state["sheets"].get(sheet)
+        if entry:
+            entry.pop("verdicts", None)
+            self.save()
+
     def clear_sheet(self, sheet: str) -> int:
         """刪掉整個頁簽的截圖與辨識結果。回傳刪掉幾張。"""
         folder = self.sheet_dir(sheet)

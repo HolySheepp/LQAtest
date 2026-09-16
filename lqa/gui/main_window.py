@@ -27,6 +27,19 @@ from .workers import (AnalyseWorker, AutoRecordWorker, HotkeyWatcher,
                       ScriptLoadWorker)
 
 
+# 使用者可以手動指定的判定。照最常用到的順序排，一致放第一個
+VERDICT_CHOICES = [
+    Category.PASS,
+    Category.MISMATCH,
+    Category.TRUNCATED,
+    Category.UNTRANSLATED,
+    Category.ORDER,
+    Category.SPEAKER,
+    Category.SPEAKER_CHECK,
+    Category.NOT_CAPTURED,
+]
+
+
 def card(*children: QtWidgets.QWidget, spacing: int = 10) -> QtWidgets.QFrame:
     frame = QtWidgets.QFrame()
     frame.setProperty("role", "card")
@@ -160,6 +173,27 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         for keys, step in (("Ctrl+Down", 1), ("Ctrl+Up", -1)):
             shortcut = QtGui.QShortcut(QtGui.QKeySequence(keys), self)
             shortcut.activated.connect(lambda s=step: self._jump_flagged(s))
+        self._window_shortcuts: list = []
+        self._install_window_hotkeys()
+
+    def _install_window_hotkeys(self) -> None:
+        """只在視窗內作用的快捷鍵。
+
+        標為一致預設是 Enter，不能走全域監聽 —— 那會變成在任何程式裡
+        按 Enter 都改動判定。
+        """
+        from .keymap import qt_key
+
+        for shortcut in getattr(self, "_window_shortcuts", []):
+            shortcut.setParent(None)
+        self._window_shortcuts = []
+        sequence = qt_key(self.settings.hotkeys.get("mark_pass", ""))
+        if sequence is None:
+            return
+        shortcut = QtGui.QShortcut(sequence, self)
+        shortcut.setContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+        shortcut.activated.connect(self.mark_current_pass)
+        self._window_shortcuts.append(shortcut)
 
     def _start_hotkeys(self) -> None:
         """熱鍵監聽全程執行，不是只在拍攝時。
@@ -436,6 +470,20 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.detail_actual = self._detail_box()
         self.detail_verdict = label("", "")
         self.detail_verdict.setWordWrap(True)
+
+        # 自動判定難免有誤報，人看過之後的結論才是最終答案
+        self.verdict_box = QtWidgets.QComboBox()
+        self.verdict_box.addItem("（照自動判定）", "")
+        for category in VERDICT_CHOICES:
+            self.verdict_box.addItem(CATEGORY_LABEL_ZH[category], category.value)
+        self.verdict_box.currentIndexChanged.connect(self._on_verdict_changed)
+        self.verdict_box.setEnabled(False)
+        self.pass_button = QtWidgets.QPushButton("標為一致")
+        self.pass_button.clicked.connect(self.mark_current_pass)
+        self.pass_button.setEnabled(False)
+        verdict_row = QtWidgets.QHBoxLayout()
+        verdict_row.addWidget(self.verdict_box, 1)
+        verdict_row.addWidget(self.pass_button)
         self.detail_shot = ShotView()
         self.detail_shot.setToolTip("點兩下開啟原圖")
         self.detail_shot.double_clicked = self._open_full_shot
@@ -450,6 +498,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self.detail_actual,
             label("判定", "section"),
             self.detail_verdict,
+            verdict_row,
             label("截圖", "section"),
             self.detail_shot,
         )
@@ -621,7 +670,9 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
 
     def _fill_results(self, result) -> None:
         """把解析結果寫回條目表。"""
-        self.rows = rows_from_result(result)
+        overrides = (self.project.verdicts(self.sheet)
+                     if self.project is not None else {})
+        self.rows = rows_from_result(result, overrides)
         for index in range(self.lines.topLevelItemCount()):
             item = self.lines.topLevelItem(index)
             row = self.rows.get(index)
@@ -675,6 +726,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self.detail_actual.setPlainText("")
             self.detail_verdict.setText("")
             self.detail_shot.set_shot(QtGui.QPixmap())
+            self._refresh_verdict_box(-1, None)
             return
 
         line = self.expected[index]
@@ -697,6 +749,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self.detail_actual.setPlainText("（尚未截圖）")
 
         self.detail_verdict.setText(self._verdict_text(row))
+        self._refresh_verdict_box(index, row)
         self.detail_shot.set_shot(self._shot_pixmap(captured, index))
 
     def _set_actual_speaker(self, row, captured) -> None:
@@ -732,11 +785,55 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         except Exception:      # 提醒而已，壞掉不該影響解析結果
             return []
 
+    def _refresh_verdict_box(self, index: int, row) -> None:
+        """把下拉選單同步到這一條的狀態。解析前沒有東西可以改。"""
+        usable = row is not None and 0 <= index < len(self.expected)
+        self.verdict_box.blockSignals(True)
+        self.verdict_box.setEnabled(usable)
+        self.pass_button.setEnabled(usable)
+        value = row.override.value if (usable and row.override) else ""
+        self.verdict_box.setCurrentIndex(max(0, self.verdict_box.findData(value)))
+        self.verdict_box.blockSignals(False)
+
+    def _on_verdict_changed(self, _index: int) -> None:
+        self.set_verdict(self._current_row_index(), self.verdict_box.currentData())
+
+    def mark_current_pass(self) -> None:
+        """把目前這條標成一致。誤報最常見的修法，所以給一顆按鈕加快捷鍵。"""
+        self.set_verdict(self._current_row_index(), Category.PASS.value)
+
+    def _current_row_index(self) -> int:
+        return self.lines.indexOfTopLevelItem(self.lines.currentItem())
+
+    def set_verdict(self, index: int, value: str) -> None:
+        if index < 0 or index >= len(self.expected) or self.project is None:
+            return
+        row = self.rows.get(index)
+        if row is None:
+            return
+        row.override = Category(value) if value else None
+        self.project.set_verdict(self.sheet, index, value or None,
+                                 self.expected[index].dialogue_id)
+        item = self.lines.topLevelItem(index)
+        if item is not None:
+            item.setText(5, row.label)
+        self._refresh_filter_labels()
+        self._repaint_lines()
+        self._show_detail(self.lines.currentItem())
+        self.status.setText(
+            f"第 {index + 1} 條已標為「{CATEGORY_LABEL_ZH[row.override]}」"
+            if row.override else f"第 {index + 1} 條改回自動判定")
+
     def _verdict_text(self, row) -> str:
         if row is None:
             return "尚未解析"
+        parts = [row.label]
+        if row.override is not None and row.auto_label != row.label:
+            parts.append(f"（自動判定是「{row.auto_label}」）")
         # 說明裡通常已經帶了相似度，不另外再列一次
-        return "\n".join([row.label] + ([row.detail] if row.detail else []))
+        if row.detail:
+            parts.append(row.detail)
+        return "\n".join(parts)
 
     def _shot_pixmap(self, captured, index: int) -> QtGui.QPixmap:
         """這一條的截圖。解析前也要看得到。
@@ -1150,7 +1247,8 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.start_button.setEnabled(False)
         worker = AnalyseWorker(
             self.store.dir, self.profile, self.script_path,
-            [self.sheet], self.settings.speakers_path, self)
+            [self.sheet], self.settings.speakers_path, self,
+            ask_speakers=self.settings.speaker_ask)
         self._analysing_sheet = self.sheet
         worker.progress.connect(self._on_analysis_progress)
         worker.finished_ok.connect(self._on_analysis_done)
@@ -1217,10 +1315,12 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
     # ---------- 雜項 ----------
 
     def _refresh_hotkey_hint(self) -> None:
+        from .workers import WINDOW_ONLY_ACTIONS
+
         keys = self.settings.hotkeys
         self.hotkey_hint.setText("　".join(
             f"{keys[name].upper()} {HOTKEY_LABELS[name]}" for name in HOTKEY_LABELS
-            if keys.get(name)))
+            if keys.get(name) and name not in WINDOW_ONLY_ACTIONS))
 
     def _notify(self, title: str, body: str) -> None:
         if QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
@@ -1247,6 +1347,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             return
         self.settings.save()
         self.apply_theme()
+        self._install_window_hotkeys()
         if self.settings.script_path and self.settings.script_path != before:
             self._load_script(self.settings.script_path)
 

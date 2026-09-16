@@ -35,7 +35,7 @@ _CATEGORY_FILL = {
     Category.MISSING: "E4D6FF",
     Category.NOT_CAPTURED: "DCDCE8",
     Category.SPEAKER: "D6F5E3",
-    Category.SPEAKER_VARIANT: "D6F5E3",
+    Category.SPEAKER_CHECK: "FFF0C7",
     Category.EXTRA: "E8E8E8",
 }
 
@@ -44,7 +44,7 @@ CATEGORY_ORDER = [
     Category.TRUNCATED,
     Category.MISMATCH,
     Category.SPEAKER,
-    Category.SPEAKER_VARIANT,
+    Category.SPEAKER_CHECK,
     Category.ORDER,
     Category.MISSING,
     Category.EXTRA,

@@ -17,6 +17,11 @@ from ..hotkey import KeyWatcher
 from ..model import CapturedLine
 
 
+# 這些動作只在視窗內作用，不進全域監聽。預設的 Enter 若是全域的，
+# 使用者在任何程式裡按 Enter 都會改動判定
+WINDOW_ONLY_ACTIONS = {"mark_pass"}
+
+
 class HotkeyWatcher(QtCore.QThread):
     """全域熱鍵輪詢。
 
@@ -31,7 +36,8 @@ class HotkeyWatcher(QtCore.QThread):
         super().__init__(parent)
         # 沒綁定的動作要先濾掉。空字串送進 resolve 會丟 ValueError，
         # 整個監聽就收不到任何按鍵了 —— 症狀是「所有快捷鍵都失效」
-        self._names = {name: key for name, key in keys.items() if key}
+        self._names = {name: key for name, key in keys.items()
+                       if key and name not in WINDOW_ONLY_ACTIONS}
         self._stop = False
 
     def stop(self) -> None:
@@ -131,6 +137,7 @@ class AnalyseWorker(QtCore.QThread):
         sheets: list[str],
         speakers_path: str,
         parent: QtCore.QObject | None = None,
+        ask_speakers: list[str] | None = None,
     ):
         super().__init__(parent)
         self.session_dir = session_dir
@@ -138,11 +145,12 @@ class AnalyseWorker(QtCore.QThread):
         self.script_path = script_path
         self.sheets = sheets
         self.speakers_path = speakers_path
+        self.ask_speakers = ask_speakers or []
 
     def run(self) -> None:
         try:
-            from ..compare.classify import compare
-            from ..compare.script_loader import load_script, load_speaker_map
+            from ..compare.classify import CompareConfig, compare
+            from ..compare.script_loader import load_script, read_speaker_map
             from ..priority import low_priority
             from ..record.reader import read_session
 
@@ -153,13 +161,17 @@ class AnalyseWorker(QtCore.QThread):
                 captured = read_session(
                     self.session_dir, profile=self.profile, on_progress=on_progress
                 )
-                speakers = (
-                    load_speaker_map(self.speakers_path)
+                table = read_speaker_map(
+                    self.speakers_path
                     if self.speakers_path and Path(self.speakers_path).exists()
-                    else {}
+                    else None
                 )
-                expected = load_script(self.script_path, speakers, sheets=self.sheets)
-                result = compare(expected, captured)
+                expected = load_script(self.script_path, table.names,
+                                       sheets=self.sheets)
+                ask = {name: table.conflicts.get(name, [])
+                       for name in self.ask_speakers if name in table.conflicts}
+                result = compare(expected, captured,
+                                 CompareConfig(ask_speakers=ask))
             self.finished_ok.emit(result)
         except Exception as exc:  # 背景執行緒的例外要送回介面，不能讓它靜靜死掉
             self.failed.emit(f"{type(exc).__name__}: {exc}")

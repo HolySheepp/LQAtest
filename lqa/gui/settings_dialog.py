@@ -64,6 +64,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, settings: GuiSettings, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.settings = settings
+        self._last_reviewed = ""
         self.setWindowTitle("設定")
         self.setMinimumWidth(420)
 
@@ -181,6 +182,12 @@ class SettingsDialog(QtWidgets.QDialog):
         row.addWidget(edit, 1)
         browse = QtWidgets.QPushButton("瀏覽")
         browse.clicked.connect(lambda: self._browse(edit, filter_))
+        if "對照表" in text:
+            edit.editingFinished.connect(lambda: self._review_speakers(edit.text()))
+            check = QtWidgets.QPushButton("檢查")
+            check.setToolTip("看看這份表有沒有重複或中英不一致")
+            check.clicked.connect(lambda: self._review_speakers(edit.text(), True))
+            row.addWidget(check)
         row.addWidget(browse)
         layout.addLayout(row)
         return edit
@@ -218,6 +225,28 @@ class SettingsDialog(QtWidgets.QDialog):
             dot.set_colour(swatch(key, self.settings.dark,
                                   self.settings.custom_accent))
             dot.setChecked(key == self.settings.accent)
+
+    def _review_speakers(self, path: str, always: bool = False) -> None:
+        """指定對照表之後把問題攤開。
+
+        沒問題時不打擾（除非是自己按「檢查」）—— 每次改個路徑就跳一個
+        視窗出來很煩，但有問題時一定要講，那些錯會安靜地毀掉整輪檢查。
+        """
+        from ..compare.script_loader import read_speaker_map
+        from .speaker_dialog import SpeakerTableDialog, summary
+
+        if not path or not Path(path).exists() or path == self._last_reviewed:
+            return
+        self._last_reviewed = path
+        try:
+            table = read_speaker_map(path)
+        except (OSError, ValueError) as exc:
+            self.hint.setText(f"對照表讀不到：{exc}")
+            return
+        if not always and not table.conflicts and not table.duplicates:
+            self.hint.setText(f"對照表 {summary(table)}")
+            return
+        SpeakerTableDialog(path, self.settings, self).exec()
 
     def _on_sound(self, _index: int) -> None:
         name = self.sound_box.currentData()

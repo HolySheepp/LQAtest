@@ -32,9 +32,14 @@ class RowResult:
     """一列文本的比對結果。"""
 
     issues: list[Issue] = field(default_factory=list)
+    # 使用者手動改過的判定。自動判定難免有誤報，而人看過之後的結論
+    # 才是最終答案 —— 所以它蓋過下面所有推導出來的東西
+    override: Category | None = None
 
     @property
     def not_captured(self) -> bool:
+        if self.override is not None:
+            return self.override is Category.NOT_CAPTURED
         return any(i.category is Category.NOT_CAPTURED for i in self.issues)
 
     @property
@@ -44,12 +49,16 @@ class RowResult:
         「未截圖」不算 —— 那是使用者自己跳過的，不是遊戲的問題，
         混進疑慮裡會把真正要看的東西淹掉。
         """
+        if self.override is not None:
+            return self.override not in (Category.PASS, Category.NOT_CAPTURED)
         return any(i.category not in (Category.PASS, Category.NOT_CAPTURED)
                    for i in self.issues)
 
     @property
     def categories(self) -> list[Category]:
         """要顯示的分類。只有在沒有其他分類時才顯示「一致」。"""
+        if self.override is not None:
+            return [self.override]
         others = [i.category for i in self.issues if i.category is not Category.PASS]
         picked = others or [i.category for i in self.issues]
         seen: list[Category] = []
@@ -60,7 +69,15 @@ class RowResult:
 
     @property
     def label(self) -> str:
-        return "／".join(CATEGORY_LABEL_ZH[c] for c in self.categories)
+        text = "／".join(CATEGORY_LABEL_ZH[c] for c in self.categories)
+        # 標出來才知道這個結論是人給的，不是軟體判的
+        return f"{text}（人工）" if self.override is not None else text
+
+    @property
+    def auto_label(self) -> str:
+        """自動判定原本的結論，改判之後還看得到。"""
+        without = RowResult(self.issues)
+        return without.label
 
     @property
     def captured(self):
@@ -82,7 +99,8 @@ class RowResult:
         return max(values) if values else 0.0
 
 
-def rows_from_result(result) -> dict[int, RowResult]:
+def rows_from_result(result, overrides: dict[int, str] | None = None
+                    ) -> dict[int, RowResult]:
     """Issue -> 列號。
 
     用物件identity而不是對話ID：同一個頁簽裡ID可能重複，
@@ -97,6 +115,12 @@ def rows_from_result(result) -> dict[int, RowResult]:
         if index is None:
             continue
         rows.setdefault(index, RowResult()).issues.append(issue)
+    for index, name in (overrides or {}).items():
+        try:
+            category = Category(name)
+        except ValueError:
+            continue        # 舊檔案存了現在已經沒有的分類，忽略就好
+        rows.setdefault(index, RowResult()).override = category
     return rows
 
 

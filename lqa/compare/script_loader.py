@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import csv
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -129,7 +129,7 @@ SPEAKER_TEXT_SUFFIXES = (".csv", ".tsv", ".txt", ".md")
 SPEAKER_SEPARATORS = re.compile(r"[,，	;；]")
 
 
-def _read_speaker_text(path: Path) -> list[list[str]]:
+def _read_speaker_text(path: Path) -> list[tuple[int, list[str]]]:
     """讀手寫的對照表：一行一個名字，中文在前、英文在後。
 
     這份表是人手打的，不是程式產生的，所以盡量收：
@@ -138,8 +138,8 @@ def _read_speaker_text(path: Path) -> list[list[str]]:
       - 以 # 開頭的行當成標題或註解略過
       - 空行略過
     """
-    rows: list[list[str]] = []
-    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+    rows: list[tuple[int, list[str]]] = []
+    for number, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -149,7 +149,7 @@ def _read_speaker_text(path: Path) -> list[list[str]]:
             parts = line.strip("|").split("|")
         else:
             parts = SPEAKER_SEPARATORS.split(line)
-        rows.append([cell.strip() for cell in parts])
+        rows.append((number, [cell.strip() for cell in parts]))
     return rows
 
 
@@ -168,6 +168,15 @@ def _speaker_columns(header: Sequence[Any]) -> tuple[int, int] | None:
 
 
 @dataclass
+class SpeakerEntry:
+    """對照表裡的一列。帶著列號才改得動原檔。"""
+
+    zh: str
+    en: str
+    row: int        # 1 起算。xlsx 是工作表列號，純文字是行號
+
+
+@dataclass
 class SpeakerMap:
     """對照表的內容，外加讀的時候發現的問題。"""
 
@@ -175,6 +184,10 @@ class SpeakerMap:
     # 同一個中文名被填了兩種以上的英文名。第一個會被採用，其餘忽略 ——
     # 但這幾乎一定是表本身填錯了，不講出來就會一路錯下去
     conflicts: dict[str, list[str]]
+    # 中英文都一樣的重複列。不影響結果，但大表裡會越積越多
+    duplicates: dict[str, list[int]] = field(default_factory=dict)
+    entries: list[SpeakerEntry] = field(default_factory=list)
+    path: Path | None = None
 
 
 def read_speaker_map(path: str | Path | None) -> SpeakerMap:
@@ -202,7 +215,8 @@ def read_speaker_map(path: str | Path | None) -> SpeakerMap:
     suffix = p.suffix.lower()
     if suffix in (".xlsx", ".xlsm"):
         sheets = _read_xlsx_sheets(p)
-        rows = next(iter(sheets.values())) if sheets else []
+        raw = next(iter(sheets.values())) if sheets else []
+        rows = list(enumerate(raw, 1))
     elif suffix in SPEAKER_TEXT_SUFFIXES:
         rows = _read_speaker_text(p)
     else:
@@ -210,16 +224,18 @@ def read_speaker_map(path: str | Path | None) -> SpeakerMap:
             f"不支援的對照表格式：{p.suffix}"
             "（可用 xlsx、xlsm、csv、tsv、txt、md）")
 
-    rows = [r for r in rows if any(str(c).strip() for c in r if c is not None)]
+    numbered = [(n, r) for n, r in rows
+                if any(str(c).strip() for c in r if c is not None)]
+    rows = [r for _n, r in numbered]
     if not rows:
-        return SpeakerMap({}, {})
+        return SpeakerMap({}, {}, path=p)
 
     columns = None
-    body = rows
+    body = numbered
     for idx, row in enumerate(rows[:5]):
         found = _speaker_columns(row)
         if found:
-            columns, body = found, rows[idx + 1:]
+            columns, body = found, numbered[idx + 1:]
             break
     if columns is None:
         columns = (0, 1)  # 沒有可辨識的標題，當成兩欄表
@@ -227,17 +243,28 @@ def read_speaker_map(path: str | Path | None) -> SpeakerMap:
     zh_idx, en_idx = columns
     mapping: dict[str, str] = {}
     seen: dict[str, list[str]] = {}
-    for row in body:
+    entries: list[SpeakerEntry] = []
+    dupes: dict[str, list[int]] = {}
+    for number, row in body:
         zh, en = _cell(row, zh_idx), _cell(row, en_idx)
         if not zh or not en:
             continue
         if _norm_header(zh) in SPEAKER_ZH_ALIASES:
             continue  # 殘留的標題列
         mapping.setdefault(zh, en)
-        if en not in seen.setdefault(zh, []):
+        entries.append(SpeakerEntry(zh, en, number))
+        if en in seen.setdefault(zh, []):
+            # 中英文都一樣的重複列。第一列留著，其餘記下來供修剪
+            dupes.setdefault(f"{zh}\t{en}", []).append(number)
+        else:
             seen[zh].append(en)
-    return SpeakerMap(mapping,
-                      {zh: names for zh, names in seen.items() if len(names) > 1})
+    return SpeakerMap(
+        mapping,
+        {zh: names for zh, names in seen.items() if len(names) > 1},
+        duplicates=dupes,
+        entries=entries,
+        path=p,
+    )
 
 
 def load_speaker_map(path: str | Path | None) -> dict[str, str]:
@@ -387,3 +414,53 @@ def load_script(
 def unknown_speakers(lines: Iterable[ExpectedLine]) -> list[str]:
     """列出有中文名字但對照表查不到英文名的發話者，提醒使用者補齊。"""
     return sorted({ln.speaker_zh for ln in lines if ln.speaker_zh and not ln.speaker_en})
+
+
+def write_speaker_edits(path: str | Path, delete_rows: set[int],
+                        updates: dict[int, str]) -> Path:
+    """就地修改對照表：刪掉指定列、改掉指定列的英文名。
+
+    先備份再動手。這是使用者自己維護的檔案，而且可能是整個團隊共用的 ——
+    改壞了沒有第二份，所以一定留一份原樣的在旁邊。
+
+    xlsx 走 openpyxl 原地改，只動需要動的儲存格與列；純文字檔重寫整份，
+    但保留註解與空行。
+    """
+    p = Path(path)
+    backup = p.with_suffix(p.suffix + ".bak")
+    backup.write_bytes(p.read_bytes())
+
+    if p.suffix.lower() in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(p)
+        ws = wb[wb.sheetnames[0]]
+        table = read_speaker_map(p)
+        columns = {e.row: e for e in table.entries}
+        for row, english in updates.items():
+            entry = columns.get(row)
+            if entry is None:
+                continue
+            for column in range(1, ws.max_column + 1):
+                if str(ws.cell(row=row, column=column).value or "").strip() == entry.en:
+                    ws.cell(row=row, column=column, value=english)
+                    break
+        for row in sorted(delete_rows, reverse=True):
+            ws.delete_rows(row)
+        wb.save(p)
+        wb.close()
+        return backup
+
+    lines = p.read_text(encoding="utf-8-sig").splitlines()
+    kept: list[str] = []
+    for number, line in enumerate(lines, 1):
+        if number in delete_rows:
+            continue
+        english = updates.get(number)
+        if english is not None:
+            separator = "," if "," in line or "\uff0c" in line else "\t"
+            head = SPEAKER_SEPARATORS.split(line.strip(), 1)[0].strip()
+            line = f"{head}{separator}{english}"
+        kept.append(line)
+    p.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    return backup

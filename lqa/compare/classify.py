@@ -32,6 +32,8 @@ class CompareConfig:
     order_threshold: float = 0.92
     untranslated_cjk_ratio: float = 0.05  # CJK 佔比達此值才算未翻譯
     check_speaker: bool = True
+    # 對照表對這些中文名有兩種以上的譯法。不當成錯，標出來讓人確認
+    ask_speakers: dict[str, list[str]] = field(default_factory=dict)
     align: AlignConfig = field(default_factory=AlignConfig)
 
 
@@ -75,6 +77,20 @@ def _speaker_issue(
     """發話者比對。只有在文本有給發話者時才檢查。"""
     if not enabled or not cfg.check_speaker or not exp.speaker_zh:
         return None
+    candidates = cfg.ask_speakers.get(exp.speaker_zh)
+    if candidates:
+        # 對照表自己就有兩種譯法，沒有正確答案可以比。標出來讓人看
+        actual = nz.strip_speaker_id(cap.speaker_text)
+        return Issue(
+            category=Category.SPEAKER_CHECK,
+            expected=exp,
+            captured=cap,
+            detail=(f"對照表對「{exp.speaker_zh}」有兩種譯法："
+                    f"{' / '.join(candidates)}；畫面顯示 "
+                    f"{actual or '（沒讀到）'}。請確認哪個才對"),
+            expected_order=exp.order + 1,
+            actual_order=cap.seq + 1,
+        )
     if not exp.speaker_en:
         return None  # 對照表沒這個名字，交給 unknown_speakers 提醒，不誤報
     # 畫面上的發話者後面會接內部流水號（例如 "Cyan(11201)"），要先剝掉
@@ -124,65 +140,6 @@ def _find_elsewhere(
         if score > best_score:
             best, best_score = candidate, score
     return (best, best_score) if best_score >= threshold else (None, 0.0)
-
-
-def _variant_issues(
-    matched: list[tuple[ExpectedLine, CapturedLine]],
-    cfg: CompareConfig,
-    enabled: bool,
-) -> list[Issue]:
-    """同一個發話者在遊戲中出現不只一種英文名。
-
-    這是對照表查不出來的那一類：表裡沒有這個中文名時，發話者檢查會整個
-    跳過（沒有正確答案就不該亂報錯）。但「同一個角色前後譯名不一致」
-    本身就是問題，不需要正確答案也看得出來 —— 拿畫面自己和自己比就好。
-
-    有正確答案的名字不在這裡處理，那些對不上的已經是發話者錯誤了，
-    重複報只會讓同一件事出現兩次。
-    """
-    if not enabled or not cfg.check_speaker:
-        return []
-
-    # 中文名 -> {畫面上的英文名: [出現次數, 第一次出現在第幾句]}
-    tally: dict[str, dict[str, list[int]]] = {}
-    for order, (exp, cap) in enumerate(matched):
-        if not exp.speaker_zh or exp.speaker_en:
-            continue
-        name = nz.strip_speaker_id(cap.speaker_text)
-        if not name:
-            continue
-        entry = tally.setdefault(exp.speaker_zh, {})
-        if name in entry:
-            entry[name][0] += 1
-        else:
-            entry[name] = [1, order]
-
-    issues: list[Issue] = []
-    for exp, cap in matched:
-        entry = tally.get(exp.speaker_zh)
-        if not entry or len(entry) < 2:
-            continue
-        name = nz.strip_speaker_id(cap.speaker_text)
-        # 次數最多的當主要譯名；同票時以先出現的為準，才不會每次跑結果不同
-        main = min(entry, key=lambda n: (-entry[n][0], entry[n][1]))
-        if not name or name == main:
-            continue
-        # OCR 把同一個名字讀出一兩個字差別是常事，那不是譯名不一致
-        if nz.similarity(name, main) >= cfg.speaker_threshold:
-            continue
-        others = "、".join(
-            f"{n}（{entry[n][0]} 次）"
-            for n in sorted(entry, key=lambda n: (-entry[n][0], entry[n][1])))
-        issues.append(Issue(
-            category=Category.SPEAKER_VARIANT,
-            expected=exp,
-            captured=cap,
-            detail=(f"「{exp.speaker_zh}」在遊戲中出現不只一種譯名：{others}。"
-                    "對照表沒有這個名字，無法判斷哪個才對"),
-            expected_order=exp.order + 1,
-            actual_order=cap.seq + 1,
-        ))
-    return issues
 
 
 def _guess_untranslated_source(
@@ -247,7 +204,6 @@ def compare(
         )
 
     issues: list[Issue] = []
-    matched: list[tuple[ExpectedLine, CapturedLine]] = []
     for pair in pairs:
         exp = expected[pair.exp_idx] if pair.exp_idx is not None else None
         cap = captured[pair.cap_idx] if pair.cap_idx is not None else None
@@ -357,10 +313,8 @@ def compare(
         # 超框留著：文字被截斷但確實是這一句，發話者仍有參考價值
         if base.category not in (Category.PASS, Category.TRUNCATED):
             continue
-        matched.append((exp, cap))
         spk = _speaker_issue(exp, cap, cfg, speaker_enabled)
         if spk is not None:
             issues.append(spk)
 
-    issues.extend(_variant_issues(matched, cfg, speaker_enabled))
     return CompareResult(issues=issues, expected=expected, captured=captured)
