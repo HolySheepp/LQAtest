@@ -13,6 +13,7 @@ from typing import Optional
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..compare.normalize import display_key, strip_speaker_id
+from ..logging_setup import get
 from ..config import Profile
 from ..model import CATEGORY_LABEL_ZH, Category
 from ..record.bound import BoundCapture
@@ -38,6 +39,9 @@ VERDICT_CHOICES = [
     Category.SPEAKER_CHECK,
     Category.NOT_CAPTURED,
 ]
+
+
+log = get("gui.main")
 
 
 def card(*children: QtWidgets.QWidget, spacing: int = 10) -> QtWidgets.QFrame:
@@ -604,6 +608,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         if self.project is not None and self.shots:
             self.store = self.project.store(name)
         self._fill_lines()
+        self._restore_results()
 
     def _load_sheet(self, name: str) -> list:
         """讀一個頁簽的文本，讀過的留著。
@@ -630,6 +635,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
                 self.settings.speakers_path
                 if Path(self.settings.speakers_path).exists() else None)
             self._speaker_conflicts = table.conflicts
+            self._speaker_table = table
             self._sheet_cache[name] = load_script(
                 self.script_path, table.names, sheets=[name])
         return self._sheet_cache[name]
@@ -667,6 +673,40 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self.lines.addTopLevelItem(item)
         self._repaint_lines()
         self._show_detail(self.lines.currentItem())
+
+    def _restore_results(self) -> None:
+        """把上次的解析結果帶回來。
+
+        結果本來就存在 lines.jsonl 裡，重開軟體時直接讀回來重新比對就好 ——
+        辨識是慢的那一步，比對只有幾毫秒。這樣關掉再打開不必重跑一次。
+
+        重新比對而不是把結果整包存起來：翻譯文本可能改過，
+        拿舊結論直接顯示會和現在的文本對不上。
+        """
+        if self.project is None or self.store is None or not self.sheet:
+            return
+        if not self.project.progress(self.sheet).analysed:
+            return
+        try:
+            from ..compare.classify import CompareConfig, compare
+            from ..record.reader import load_lines
+
+            lines = load_lines(self.store.dir)
+            if not lines:
+                return
+            table = getattr(self, "_speaker_table", None)
+            ask = {name: table.conflicts.get(name, [])
+                   for name in self.settings.speaker_ask
+                   if table and name in table.conflicts}
+            result = compare(self.expected, lines, CompareConfig(ask_speakers=ask))
+        except Exception as exc:       # 讀不回來就當作沒解析過，不要擋住介面
+            log.warning("讀不回上次的解析結果：%s", exc)
+            return
+        self.result = result
+        self._fill_results(result)
+        self.status.setText(
+            f"顯示上次的解析結果（{len(lines)} 張截圖）。"
+            "重新按「開始解析」可以再跑一次")
 
     def _fill_results(self, result) -> None:
         """把解析結果寫回條目表。"""

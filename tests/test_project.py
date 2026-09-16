@@ -267,3 +267,85 @@ class TestClearSheetWithAnOpenStore:
         finally:
             store.close()
         assert list((project.sheet_dir("AVG1") / "shots").glob("*.png")) == []
+
+
+class TestOcrCache:
+    """辨識結果快取：同一張圖、同一組參數，結果一定一樣。
+
+    它只負責快，絕不能讓結果變錯 —— 所以任何一點對不上都要重跑。
+    """
+
+    def _profile(self):
+        from lqa.config import Profile
+
+        return Profile(window_title="測試", body_roi=(0, 0, 10, 10))
+
+    def test_same_profile_gives_the_same_key(self):
+        from lqa.record.ocr_cache import cache_key
+
+        assert cache_key(self._profile()) == cache_key(self._profile())
+
+    def test_changing_a_threshold_invalidates_the_cache(self):
+        """門檻一動遮罩就不同，辨識結果也可能不同。"""
+        from dataclasses import replace
+
+        from lqa.config import MaskConfig
+        from lqa.record.ocr_cache import cache_key
+
+        other = replace(self._profile(),
+                        mask=MaskConfig(bright_threshold=200))
+        assert cache_key(self._profile()) != cache_key(other)
+
+    def test_changing_the_roi_invalidates_the_cache(self):
+        from dataclasses import replace
+
+        from lqa.record.ocr_cache import cache_key
+
+        other = replace(self._profile(), body_roi=(5, 5, 20, 20))
+        assert cache_key(self._profile()) != cache_key(other)
+
+    def test_a_reshot_screenshot_is_not_served_from_cache(self, tmp_path):
+        """重拍同一條會蓋掉原檔，舊結果就不算數了。"""
+        import time
+
+        from lqa.model import CapturedLine
+        from lqa.record.ocr_cache import OcrCache
+
+        shot = tmp_path / "00000.png"
+        shot.write_bytes(b"first")
+        cache = OcrCache(tmp_path, "k")
+        cache.put(shot, CapturedLine(seq=0, timestamp=0.0, body_text="hello"))
+        assert cache.get(shot) is not None
+        time.sleep(0.01)
+        shot.write_bytes(b"different content here")
+        assert cache.get(shot) is None
+
+    def test_a_different_key_discards_everything(self, tmp_path):
+        from lqa.model import CapturedLine
+        from lqa.record.ocr_cache import OcrCache
+
+        shot = tmp_path / "00000.png"
+        shot.write_bytes(b"x")
+        cache = OcrCache(tmp_path, "one")
+        cache.put(shot, CapturedLine(seq=0, timestamp=0.0, body_text="hello"))
+        cache.save({shot.name})
+        assert OcrCache(tmp_path, "two").get(shot) is None
+        assert OcrCache(tmp_path, "one").get(shot) is not None
+
+    def test_a_corrupt_cache_file_is_ignored(self, tmp_path):
+        """快取壞掉就當成沒有，重跑一次就好，不能讓整輪解析失敗。"""
+        from lqa.record.ocr_cache import CACHE_NAME, OcrCache
+
+        (tmp_path / CACHE_NAME).write_text("{not json", encoding="utf-8")
+        assert OcrCache(tmp_path, "k").entries == {}
+
+    def test_saving_drops_screenshots_that_no_longer_exist(self, tmp_path):
+        from lqa.model import CapturedLine
+        from lqa.record.ocr_cache import OcrCache
+
+        shot = tmp_path / "00000.png"
+        shot.write_bytes(b"x")
+        cache = OcrCache(tmp_path, "k")
+        cache.put(shot, CapturedLine(seq=0, timestamp=0.0))
+        cache.save(set())
+        assert OcrCache(tmp_path, "k").entries == {}

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import re
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -427,7 +428,9 @@ def write_speaker_edits(path: str | Path, delete_rows: set[int],
     但保留註解與空行。
     """
     p = Path(path)
-    backup = p.with_suffix(p.suffix + ".bak")
+    # 時間戳而不是固定的 .bak：改第二次時不能把唯一一份原樣的蓋掉
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = p.with_name(f"{p.stem}_{stamp}{p.suffix}.bak")
     backup.write_bytes(p.read_bytes())
 
     if p.suffix.lower() in (".xlsx", ".xlsm"):

@@ -28,7 +28,9 @@ import numpy as np
 from ..config import Profile
 from .store import SessionStore
 
-PROJECT_ROOT = Path("projects")
+from ..paths import project_root
+
+PROJECT_ROOT = project_root()
 
 
 def safe_name(text: str) -> str:
@@ -172,6 +174,7 @@ class Project:
                 removed += 1
         try:
             (folder / "lines.jsonl").unlink(missing_ok=True)
+            (folder / "ocr_cache.json").unlink(missing_ok=True)
         except OSError:
             # Windows 不讓人刪除開啟中的檔案。刪不掉就算了，不能讓整個
             # 清除卡在這一步 —— 截圖已經刪掉了，狀態一定要跟著更新，

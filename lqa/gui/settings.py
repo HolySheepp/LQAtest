@@ -10,7 +10,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-SETTINGS_PATH = Path("config/gui.json")
+from ..paths import config_path
+
+SETTINGS_PATH = config_path("gui.json")
 
 DEFAULT_HOTKEYS = {
     "shoot": "f9",      # 拍下目前這條
@@ -41,8 +43,8 @@ class GuiSettings:
     custom_accent: str = "#4f8cff"
     hotkeys: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_HOTKEYS))
     script_path: str = ""
-    profile_path: str = "config/profile.json"
-    speakers_path: str = "config/speakers.csv"
+    profile_path: str = str(config_path("profile.json"))
+    speakers_path: str = str(config_path("speakers.csv"))
     notify_on_finish: bool = True
     # 解析完成時播的音效，就是 assets/sounds 裡的檔名。空字串代表不播
     sound_on_finish: str = "啵_Bop"

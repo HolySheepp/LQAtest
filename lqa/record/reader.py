@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -26,6 +27,7 @@ from ..imageio import imread
 from ..model import CapturedLine
 from ..ocr.base import OcrEngine, engine_for
 from ..priority import low_priority
+from .ocr_cache import OcrCache, cache_key
 from .recorder import _ocr_input
 from .store import SessionStore, session_meta, session_profile, session_shots
 
@@ -113,6 +115,27 @@ def clean(lines: list[CapturedLine], repeat_threshold: float = 0.97) -> tuple[li
     return kept, duplicates, partials
 
 
+def load_lines(session_dir: str | Path) -> list[CapturedLine]:
+    """讀回上次辨識的結果，不重新辨識。
+
+    解析完成後結果就存在 lines.jsonl 裡了，重開軟體時直接拿回來比對，
+    不必再跑一次 OCR —— 截圖沒變的話結果本來就一樣。
+    """
+    path = Path(session_dir) / "lines.jsonl"
+    if not path.exists():
+        return []
+    lines: list[CapturedLine] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            lines.append(CapturedLine.from_dict(json.loads(raw)))
+        except (ValueError, TypeError):
+            continue        # 壞掉的行跳過，讀得回多少算多少
+    return lines
+
+
 def read_session(
     session_dir: str | Path,
     profile: Optional[Profile] = None,
@@ -137,33 +160,47 @@ def read_session(
                 f"{session}/meta.json 裡沒有 profile，請用 --profile 指定"
             )
         profile = Profile.from_dict(stored)
-    engine = engine or engine_for(profile)
+    cache = OcrCache(session, cache_key(profile))
+    engine = None if cache.entries else (engine or engine_for(profile))
 
     lines: list[CapturedLine] = []
     # 解析通常和遊玩同時進行，讓出排程給模擬器比早幾秒跑完重要
     with low_priority(profile.ocr.low_priority):
         for index, path in enumerate(shots):
-            frame = imread(path)
-            if frame is None:
-                print(f"  讀不到 {path.name}，略過")
-                continue
-            body, speaker, confidence, bottom, right, layout = _read_regions(
-                frame, profile, engine)
-            line = CapturedLine(
-                seq=index,
-                expected_index=int(path.stem) if bound else -1,
-                timestamp=path.stat().st_mtime,
-                body_text=body,
-                speaker_text=speaker,
-                body_conf=confidence,
-                screenshot=f"shots/{path.name}",
-                layout=layout,
-                touches_bottom=bottom,
-                touches_right=right,
-            )
+            line = cache.get(path)
+            if line is None:
+                frame = imread(path)
+                if frame is None:
+                    print(f"  讀不到 {path.name}，略過")
+                    continue
+                # 全部命中快取時連模型都不必載入，省下將近一秒
+                if engine is None:
+                    engine = engine_for(profile)
+                body, speaker, confidence, bottom, right, layout = _read_regions(
+                    frame, profile, engine)
+                line = CapturedLine(
+                    seq=index,
+                    expected_index=int(path.stem) if bound else -1,
+                    timestamp=path.stat().st_mtime,
+                    body_text=body,
+                    speaker_text=speaker,
+                    body_conf=confidence,
+                    screenshot=f"shots/{path.name}",
+                    layout=layout,
+                    touches_bottom=bottom,
+                    touches_right=right,
+                )
+                cache.put(path, line)
+            else:
+                # 快取裡的順序是當時的，這一輪的位置要重新給
+                line.seq = index
             lines.append(line)
             if on_progress:
                 on_progress(index + 1, len(shots), line)
+
+    cache.save({p.name for p in shots})
+    if cache.hits:
+        print(f"  沿用 {cache.hits}/{len(shots)} 張的既有辨識結果")
 
     duplicates = partials = 0
     # 綁定模式每張圖已經是一條，合併相鄰重複反而會弄丟正確答案

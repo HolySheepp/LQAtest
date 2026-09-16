@@ -46,6 +46,7 @@ class ConflictDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         hint = QtWidgets.QLabel(
+            f"會修改：{table.path}\n\n"
             "每個名字選一個要留下的英文譯名，或直接輸入正確的。"
             "選「刪掉這個名字」會把它的所有列都移除。")
         hint.setWordWrap(True)
@@ -191,7 +192,8 @@ class SpeakerTableDialog(QtWidgets.QDialog):
 
     def _trim(self) -> None:
         rows = {row for rows in self.table.duplicates.values() for row in rows}
-        if not rows or not self._confirm(f"要刪掉 {len(rows)} 列重複的嗎？"):
+        if not rows or not self._confirm(
+                f"要刪掉 {len(rows)} 列重複的嗎？\n\n會修改：{self.path}"):
             return
         self._apply(rows, {}, f"已修剪 {len(rows)} 列重複")
 

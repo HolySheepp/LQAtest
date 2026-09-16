@@ -20,7 +20,9 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-LOG_DIR = Path("logs")
+from .paths import logs_dir
+
+LOG_DIR = logs_dir()
 LOG_PATH = LOG_DIR / "lqa.log"
 CRASH_PATH = LOG_DIR / "crash.log"
 

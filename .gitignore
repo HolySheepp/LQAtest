@@ -32,5 +32,10 @@ debug/
 # 專案（截圖與進度）
 projects/
 
+# 打包產出
+build/
+dist/
+*.spec.bak
+
 # 圖示由 tools/make_icon.py 產生
 !lqa/gui/assets/
