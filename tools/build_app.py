@@ -65,6 +65,8 @@ def main() -> int:
     for example in (ROOT / "config").glob("*.example.*"):
         shutil.copy(example, config / example.name)
     (DIST / "使用說明.txt").write_text(README, encoding="utf-8")
+    # 自我檢查的輸出是跑出來的東西，不該跟著出貨
+    (DIST / "self-test.txt").unlink(missing_ok=True)
 
     size = sum(f.stat().st_size for f in DIST.rglob("*") if f.is_file())
     print(f"\n資料夾版：{DIST}（{size / 1e6:.0f} MB）")

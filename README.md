@@ -7,6 +7,36 @@
 
 目標環境：Windows + 雷電模擬器，目標語言先做英文。
 
+## 打包給同事用
+
+同事不需要裝 Python 或任何東西，執行檔就是完整的。
+
+```
+.venv/Scripts/python.exe tools/build_app.py         # 資料夾版 + zip 版
+.venv/Scripts/python.exe tools/build_installer.py   # 安裝精靈（需要 Inno Setup）
+```
+
+產出在 `dist/`：
+
+| 檔案 | 用途 |
+|---|---|
+| `LQA Checker/` | 資料夾版，直接執行裡面的 exe |
+| `LQA-Checker-portable.zip` | 解壓即用，不必安裝 |
+| `LQA-Checker-setup.exe` | 安裝精靈，會建捷徑、可從「應用程式與功能」移除 |
+
+裝不起來或開不起來時，先跑自我檢查：
+
+```
+"LQA Checker.exe" --self-test
+```
+
+它會在同一個資料夾寫出 `self-test.txt`，裡面有 Qt、辨識模型、引擎的狀態。
+（安裝版在開始功能表也有「檢查安裝是否完整」。）
+
+設定與資料都放在執行檔旁邊的 `config/`、`projects/`、`logs/`，
+整個資料夾搬到別台機器就能接著用。重新安裝不會蓋掉已經校準好的 `config/`，
+移除也不會刪掉 `projects/`。
+
 ## 為什麼分成兩個階段
 
 ```
