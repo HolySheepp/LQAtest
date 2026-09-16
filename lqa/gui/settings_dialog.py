@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..hotkey import VK_CODES
 from . import sound
-from .settings import HOTKEY_LABELS, GuiSettings
+from .hotkey_button import HotkeyButton
+from .settings import DEFAULT_HOTKEYS, HOTKEY_LABELS, GuiSettings
 from .theme import ACCENT_LABELS, ACCENTS, CUSTOM, swatch
 
 
@@ -92,25 +94,28 @@ class SettingsDialog(QtWidgets.QDialog):
         self._refresh_dots()
 
         layout.addWidget(self._section("快捷鍵"))
-        self.key_boxes: dict[str, QtWidgets.QComboBox] = {}
-        names = sorted(VK_CODES)
+        self.key_buttons: dict[str, HotkeyButton] = {}
         for action, text in HOTKEY_LABELS.items():
             row = QtWidgets.QHBoxLayout()
             row.addWidget(QtWidgets.QLabel(text))
-            box = QtWidgets.QComboBox()
-            box.addItems(names)
-            box.setCurrentText(settings.hotkeys.get(action, "f9"))
-            box.currentTextChanged.connect(
-                lambda value, a=action: self._on_key(a, value))
-            self.key_boxes[action] = box
-            row.addWidget(box, 1)
+            row.addStretch(1)
+            button = HotkeyButton(settings.hotkeys.get(action, ""))
+            button.setMinimumWidth(120)
+            button.captured.connect(lambda key, a=action: self._on_key(a, key))
+            self.key_buttons[action] = button
+            row.addWidget(button)
+            reset = QtWidgets.QPushButton("重置")
+            reset.setToolTip(f"恢復成預設的 {DEFAULT_HOTKEYS[action].upper()}")
+            reset.clicked.connect(lambda _c, a=action: self._reset_key(a))
+            row.addWidget(reset)
             layout.addLayout(row)
 
         layout.addWidget(self._section("路徑"))
+        self.script_edit = self._path_row(
+            layout, "翻譯文本", settings.script_path,
+            "翻譯文本 (*.xlsx *.xlsm *.csv *.tsv)")
         self.speakers_edit = self._path_row(
             layout, "發話者對照表", settings.speakers_path)
-        self.profile_edit = self._path_row(
-            layout, "擷取設定 profile", settings.profile_path)
 
         layout.addWidget(self._section("解析完成時"))
         self.notify_check = QtWidgets.QCheckBox("顯示系統通知")
@@ -139,6 +144,11 @@ class SettingsDialog(QtWidgets.QDialog):
         debug_button.clicked.connect(self._open_debug)
         layout.addWidget(debug_button)
 
+        self.hint = QtWidgets.QLabel("")
+        self.hint.setProperty("role", "hint")
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+
         layout.addStretch(1)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -157,19 +167,21 @@ class SettingsDialog(QtWidgets.QDialog):
         return widget
 
     def _path_row(self, layout: QtWidgets.QVBoxLayout, text: str,
-                  value: str) -> QtWidgets.QLineEdit:
+                  value: str, filter_: str = "") -> QtWidgets.QLineEdit:
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel(text))
         edit = QtWidgets.QLineEdit(value)
         row.addWidget(edit, 1)
         browse = QtWidgets.QPushButton("瀏覽")
-        browse.clicked.connect(lambda: self._browse(edit))
+        browse.clicked.connect(lambda: self._browse(edit, filter_))
         row.addWidget(browse)
         layout.addLayout(row)
         return edit
 
-    def _browse(self, edit: QtWidgets.QLineEdit) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "選擇檔案", "config")
+    def _browse(self, edit: QtWidgets.QLineEdit, filter_: str = "") -> None:
+        start = str(Path(edit.text()).parent) if edit.text() else "config"
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "選擇檔案", start, filter_)
         if path:
             edit.setText(path)
 
@@ -220,7 +232,27 @@ class SettingsDialog(QtWidgets.QDialog):
             QtCore.QTimer.singleShot(0, parent.open_debug)
 
     def _on_key(self, action: str, value: str) -> None:
+        # 同一個鍵綁兩個動作時，監聽端只會認得其中一個 ——
+        # 與其讓另一個安靜地失效，不如當場把它清掉並講出來
+        if value:
+            for other, key in self.settings.hotkeys.items():
+                if other != action and key == value:
+                    self.settings.hotkeys[other] = ""
+                    self.key_buttons[other].set_key("")
+                    self.hint.setText(
+                        f"{value.upper()} 原本是「{HOTKEY_LABELS[other]}」，已改綁到"
+                        f"「{HOTKEY_LABELS[action]}」")
+                    break
+            else:
+                self.hint.setText("")
+        else:
+            self.hint.setText(f"「{HOTKEY_LABELS[action]}」已取消綁定")
         self.settings.hotkeys[action] = value
+
+    def _reset_key(self, action: str) -> None:
+        default = DEFAULT_HOTKEYS[action]
+        self.key_buttons[action].set_key(default)
+        self._on_key(action, default)
 
     def _live(self) -> None:
         parent = self.parent()
@@ -230,8 +262,8 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def _gather(self) -> None:
         """把輸入框的內容收回設定。外觀那幾項是即時套用的，不在這裡。"""
+        self.settings.script_path = self.script_edit.text().strip()
         self.settings.speakers_path = self.speakers_edit.text().strip()
-        self.settings.profile_path = self.profile_edit.text().strip()
         self.settings.notify_on_finish = self.notify_check.isChecked()
         self.settings.sound_on_finish = self.sound_box.currentData()
 

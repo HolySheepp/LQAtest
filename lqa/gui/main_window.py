@@ -240,7 +240,8 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
     def _build_left(self) -> QtWidgets.QWidget:
         self.sheet_list = QtWidgets.QListWidget()
         self.sheet_list.setMaximumHeight(118)
-        self.sheet_list.itemChanged.connect(self._on_sheet_checked)
+        self.sheet_list.setToolTip(
+            "點一下切換顯示。「開始錄製」與「開始解析」都只處理選中的這一個")
         self.sheet_list.currentRowChanged.connect(self._on_sheet_focused)
         self.sheet_list.setContextMenuPolicy(
             QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
@@ -522,50 +523,66 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             done = f"　已拍 {taken}" if taken else ""
             item = QtWidgets.QListWidgetItem(
                 f"{info.name}　{info.line_count} 句{done}")
-            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+            # 明確拿掉可勾選旗標：Qt 的預設就帶著它，留著會讓人以為
+            # 勾選有意義。錄製和解析都只處理選中的那一個
+            item.setFlags(item.flags()
+                          & ~QtCore.Qt.ItemFlag.ItemIsUserCheckable)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, info.name)
             self.sheet_list.addItem(item)
         self.sheet_list.blockSignals(False)
         if sheets:
             self.sheet_list.setCurrentRow(0)
-            self.sheet_list.item(0).setCheckState(QtCore.Qt.CheckState.Checked)
-
-    def checked_sheets(self) -> list[str]:
-        return [
-            self.sheet_list.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
-            for i in range(self.sheet_list.count())
-            if self.sheet_list.item(i).checkState() == QtCore.Qt.CheckState.Checked
-        ]
-
-    def _on_sheet_checked(self, _item: QtWidgets.QListWidgetItem) -> None:
-        self.start_button.setEnabled(bool(self.checked_sheets()) and self.profile is not None)
 
     def _on_sheet_focused(self, row: int) -> None:
+        self.start_button.setEnabled(row >= 0 and self.profile is not None)
         if row < 0 or self.bound is not None:
             return
         self._show_sheet(self.sheets[row].name)
         self.analyse_button.setEnabled(bool(self.shots))
 
     def _show_sheet(self, name: str) -> None:
-        from ..compare.script_loader import load_script, load_speaker_map
-
-        speakers = {}
-        if Path(self.settings.speakers_path).exists():
-            speakers = load_speaker_map(self.settings.speakers_path)
         try:
-            self.expected = load_script(self.script_path, speakers, sheets=[name])
+            self.expected = self._load_sheet(name)
         except (OSError, ValueError) as exc:
             # 例如文本被換掉、頁簽已不存在。是槽函式，丟出去只會印堆疊
             self.status.setText(f"讀不到頁簽「{name}」：{exc}")
             return
         self.sheet = name
         self._reload_shots()
-        self._fill_lines()
-        # 重開軟體後不必先拍攝也能直接解析既有截圖
+        # store 要在填表之前換好：細節面板會用它去找截圖，
+        # 慢一步就是拿上一個頁簽的目錄去找這個頁簽的圖
         self._close_store()
         if self.project is not None and self.shots:
             self.store = self.project.store(name)
+        self._fill_lines()
+
+    def _load_sheet(self, name: str) -> list:
+        """讀一個頁簽的文本，讀過的留著。
+
+        每切一次頁簽就重開一次 xlsx，實測 0.52 秒 —— 而且是卡在介面執行緒上，
+        用方向鍵掃過清單會一路頓。檔案或對照表換過就整個丟掉重來，
+        所以不會拿到舊內容。
+        """
+        from ..compare.script_loader import load_script, load_speaker_map
+
+        def stamp(path: str) -> float:
+            try:
+                return Path(path).stat().st_mtime
+            except OSError:
+                return 0.0
+
+        key = (self.script_path, stamp(self.script_path),
+               self.settings.speakers_path, stamp(self.settings.speakers_path))
+        if getattr(self, "_sheet_cache_key", None) != key:
+            self._sheet_cache_key = key
+            self._sheet_cache: dict[str, list] = {}
+        if name not in self._sheet_cache:
+            speakers = {}
+            if Path(self.settings.speakers_path).exists():
+                speakers = load_speaker_map(self.settings.speakers_path)
+            self._sheet_cache[name] = load_script(
+                self.script_path, speakers, sheets=[name])
+        return self._sheet_cache[name]
 
     def _reload_shots(self) -> None:
         """從磁碟重讀目前頁簽的截圖。
@@ -1133,6 +1150,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         worker = AnalyseWorker(
             self.store.dir, self.profile, self.script_path,
             [self.sheet], self.settings.speakers_path, self)
+        self._analysing_sheet = self.sheet
         worker.progress.connect(self._on_analysis_progress)
         worker.finished_ok.connect(self._on_analysis_done)
         worker.failed.connect(lambda msg: self._error("解析失敗", msg))
@@ -1147,6 +1165,14 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self.status.setText(display_key(text)[:90])
 
     def _on_analysis_done(self, result) -> None:
+        if getattr(self, "_analysing_sheet", self.sheet) != self.sheet:
+            # 解析途中被切走了。這份結果的條目對應的是另一個頁簽，
+            # 寫進現在這張表會整個錯位
+            self.status.setText(
+                f"「{self._analysing_sheet}」解析完成（目前顯示的是其他頁簽，"
+                "切回去就看得到）")
+            self.analyse_button.setEnabled(True)
+            return
         self.result = result
         if self.project is not None and self.sheet:
             self.project.mark_analysed(self.sheet)
@@ -1184,7 +1210,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         keys = self.settings.hotkeys
         self.hotkey_hint.setText("　".join(
             f"{keys[name].upper()} {HOTKEY_LABELS[name]}" for name in HOTKEY_LABELS
-            if name in keys))
+            if keys.get(name)))
 
     def _notify(self, title: str, body: str) -> None:
         if QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
@@ -1200,11 +1226,19 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
     def _open_settings(self) -> None:
         from .settings_dialog import SettingsDialog
 
+        before = self.settings.script_path
+        # 設定開著時不能還在聽熱鍵 —— 使用者正要按鍵設定快捷鍵，
+        # 那一下同時會觸發錄製或截圖
+        self._stop_hotkeys()
         dialog = SettingsDialog(self.settings, self)
-        if dialog.exec():
-            self.settings.save()
-            self.apply_theme()
-            self._start_hotkeys()      # 熱鍵可能被改過，重新掛上
+        accepted = dialog.exec()
+        self._start_hotkeys()
+        if not accepted:
+            return
+        self.settings.save()
+        self.apply_theme()
+        if self.settings.script_path and self.settings.script_path != before:
+            self._load_script(self.settings.script_path)
 
     def open_debug(self) -> None:
         from .debug_window import DebugWindow

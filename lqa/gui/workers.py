@@ -29,7 +29,9 @@ class HotkeyWatcher(QtCore.QThread):
 
     def __init__(self, keys: dict[str, str], parent: QtCore.QObject | None = None):
         super().__init__(parent)
-        self._names = {name: key for name, key in keys.items()}
+        # 沒綁定的動作要先濾掉。空字串送進 resolve 會丟 ValueError，
+        # 整個監聽就收不到任何按鍵了 —— 症狀是「所有快捷鍵都失效」
+        self._names = {name: key for name, key in keys.items() if key}
         self._stop = False
 
     def stop(self) -> None:

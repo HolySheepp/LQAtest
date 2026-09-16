@@ -187,15 +187,3 @@ class PrintWindowCapture(CaptureBackend):
         if self._unavailable and "PrintWindow" in self._unavailable:
             self._unavailable = None
         return frame
-
-
-def can_use_print_window(window_title: str) -> bool:
-    """實際抓一張看看內容是不是有效的，用來決定要不要走這條路。"""
-    try:
-        capture = PrintWindowCapture(window_title)
-    except (WindowMinimized, RuntimeError):
-        return False
-    try:
-        return not looks_blank(capture.grab())
-    finally:
-        capture.close()

@@ -180,43 +180,6 @@ def upscale_for_ocr(image: np.ndarray, factor: int) -> np.ndarray:
     )
 
 
-def mask_diff_ratio(a: np.ndarray | None, b: np.ndarray | None) -> float:
-    """以 ROI 面積正規化的差異比例。僅供診斷用。
-
-    不要拿這個做變動偵測：文字只佔 ROI 面積的 1% 出頭，
-    打完一整個字也才動到約 0.06% 的面積，訊號會被面積稀釋掉。
-    """
-    if a is None or b is None:
-        return 1.0
-    if a.shape != b.shape:
-        return 1.0
-    return float(np.count_nonzero(a != b)) / float(a.size or 1)
-
-
-def mask_changed_pixels(a: np.ndarray | None, b: np.ndarray | None) -> int:
-    """兩張遮罩差異的絕對像素數。比例會被短句的小分母放大，所以還要看絕對量。"""
-    if a is None or b is None or a.shape != b.shape:
-        return 1 << 30
-    return int(np.count_nonzero(a != b))
-
-
-def mask_change_ratio(
-    a: np.ndarray | None, b: np.ndarray | None, floor: int = 1
-) -> float:
-    """以**文字像素量**正規化的差異比例，這才是變動偵測該用的。
-
-    分母取兩張遮罩中前景像素較多者，所以門檻與 ROI 大小、
-    解析度、對白框尺寸都無關，換機器不必重調。
-    """
-    if a is None or b is None:
-        return 1.0
-    if a.shape != b.shape:
-        return 1.0
-    changed = np.count_nonzero(a != b)
-    denom = max(np.count_nonzero(a), np.count_nonzero(b), floor)
-    return float(changed) / float(denom)
-
-
 def text_pixel_count(mask: np.ndarray) -> int:
     return int(np.count_nonzero(mask))
 
