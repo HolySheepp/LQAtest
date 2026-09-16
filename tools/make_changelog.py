@@ -27,6 +27,8 @@ HEADER = """# 版本紀錄
 架構翻過好幾次。1.0.0 是第一個能直接交給同事的版本。
 
 這份檔案由 tools/make_changelog.py 從 git 標籤產生，不要手改。
+要查某一版對應哪個 commit 用 `git show v1.0.0` —— 把 commit 編號寫進這裡的話，
+「產生紀錄」這個動作本身又會產生新的 commit，標籤永遠追不上自己。
 
 """
 
@@ -52,9 +54,9 @@ def main() -> int:
     rows.sort(key=lambda r: version_key(r[0]), reverse=True)
 
     lines = [HEADER]
-    for tag, subject, commit in rows:
+    for tag, subject, _commit in rows:
         note = subject.split(" ", 1)[1] if " " in subject else subject
-        lines.append(f"### {tag.lstrip('v')}　`{commit}`\n\n{note}\n")
+        lines.append(f"### {tag.lstrip('v')}\n\n{note}\n")
     (ROOT / "CHANGELOG.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"寫出 CHANGELOG.md，共 {len(rows)} 個版本")
     return 0
