@@ -560,6 +560,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self._reload_shots()
         self._fill_lines()
         # 重開軟體後不必先拍攝也能直接解析既有截圖
+        self._close_store()
         if self.project is not None and self.shots:
             self.store = self.project.store(name)
 
@@ -817,8 +818,8 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         if self.capture:
             self.capture.close()
             self.capture = None
-        if self.store:
-            self.store.close()
+        if self.store is not None:
+            self.store.close()      # 解析還要用 store.dir，物件本身留著
         self.bound = None
         self._reload_shots()
         self._refresh_sheet_counts()
@@ -945,12 +946,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         action.setEnabled(taken > 0)
         if menu.exec(self.sheet_list.mapToGlobal(pos)) is action and taken:
             if self._confirm(f"要刪掉「{name}」的 {taken} 張截圖嗎？"):
-                removed = self.project.clear_sheet(name)
-                if name == self.sheet:
-                    self._reload_shots()
-                    self._repaint_lines()
-                self._refresh_sheet_counts()
-                self.status.setText(f"已清除「{name}」的 {removed} 張截圖")
+                self.clear_sheet(name)
 
     def _line_menu(self, pos: QtCore.QPoint) -> None:
         item = self.lines.itemAt(pos)
@@ -997,17 +993,85 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             QtGui.QDesktopServices.openUrl(
                 QtCore.QUrl.fromLocalFile(str(shot.resolve())))
         elif chosen is clear and index in self.shots:
-            self.project.clear_entry(self.sheet, index)
-            if self.bound is not None:
-                self.bound.discard(index)
-                self.bound.state.shots.pop(index, None)
-            self._reload_shots()
-            self._refresh_sheet_counts()
-            self._repaint_lines()
-            self.status.setText(f"已清除第 {index + 1} 條的截圖")
+            self.clear_entry(index)
         elif chosen is jump and self.bound is not None:
             self.bound.move_to(index)
             self._update_progress()
+
+    # ---------- 清除截圖 ----------
+
+    def clear_sheet(self, name: str) -> int:
+        """刪掉整個頁簽的截圖。"""
+        if self.project is None:
+            return 0
+        if name == self.sheet:
+            self._close_store()
+        removed = self.project.clear_sheet(name)
+        if name == self.sheet:
+            # 解析結果是從這些截圖來的，截圖沒了，判定就不該還留在表上
+            self.rows = {}
+            self.result = None
+            self._clear_result_columns()
+            self._refresh_filter_labels()
+            self._set_filter(ALL)
+        self._after_shots_changed(current=name == self.sheet)
+        self.status.setText(f"已清除「{name}」的 {removed} 張截圖")
+        return removed
+
+    def clear_entry(self, index: int) -> None:
+        """刪掉一條的截圖，退回「未截圖」。"""
+        if self.project is None:
+            return
+        self.project.clear_entry(self.sheet, index)
+        if self.bound is not None:
+            self.bound.discard(index)
+            self.bound.state.shots.pop(index, None)
+        # 這一條的判定也跟著沒了，不然表上還留著一個沒有依據的結論
+        self.rows.pop(index, None)
+        self._clear_result_columns(index)
+        self._refresh_filter_labels()
+        self._after_shots_changed()
+        self.status.setText(f"已清除第 {index + 1} 條的截圖")
+
+    def _clear_result_columns(self, index: Optional[int] = None) -> None:
+        rows = range(self.lines.topLevelItemCount()) if index is None else [index]
+        for i in rows:
+            item = self.lines.topLevelItem(i)
+            if item is not None:
+                item.setText(4, "")
+                item.setText(5, "")
+
+    def _after_shots_changed(self, current: bool = True) -> None:
+        """截圖被刪掉之後，畫面上跟截圖有關的地方全部更新。
+
+        集中在一個地方做。先前標記、頁簽數字、細節面板各自寫在不同的
+        分支裡，於是刪整個頁簽時漏了細節面板、刪單條時漏了預覽 ——
+        刪掉的截圖還留在右邊看得到。
+        """
+        if current:
+            self._reload_shots()
+            self._repaint_lines()
+            self._show_detail(self.lines.currentItem())
+            if self.bound is None:
+                self.analyse_button.setEnabled(bool(self.shots))
+        self._refresh_sheet_counts()
+
+    def _close_store(self) -> None:
+        """放掉 lines.jsonl 的檔案控制代碼。
+
+        SessionStore 一建立就用附加模式開著這個檔，而 Windows 不讓人刪除
+        開啟中的檔案 —— 清除整個頁簽時會在刪 lines.jsonl 那一步丟例外，
+        整個處理從中間斷掉：截圖已經刪了，進度沒更新，畫面也沒重畫，
+        所以綠點還留在原地。
+
+        而且每切一次頁簽就新建一個 store，不關掉就是一路漏控制代碼。
+        """
+        if self.store is not None:
+            try:
+                self.store.close()
+            except OSError:
+                pass
+            self.store = None
 
     def _confirm(self, message: str) -> bool:
         return QtWidgets.QMessageBox.question(
@@ -1111,5 +1175,6 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self.stop_capture()
         self._stop_auto_record()
         self._stop_hotkeys()
+        self._close_store()
         self.settings.save()
         super().closeEvent(event)

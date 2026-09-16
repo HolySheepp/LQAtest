@@ -139,7 +139,14 @@ class Project:
             for path in shots_dir.glob("*.png"):
                 path.unlink(missing_ok=True)
                 removed += 1
-        (folder / "lines.jsonl").unlink(missing_ok=True)
+        try:
+            (folder / "lines.jsonl").unlink(missing_ok=True)
+        except OSError:
+            # Windows 不讓人刪除開啟中的檔案。刪不掉就算了，不能讓整個
+            # 清除卡在這一步 —— 截圖已經刪掉了，狀態一定要跟著更新，
+            # 否則進度紀錄會和磁碟上的東西對不起來。
+            # 反正下次解析會整份覆寫過去
+            pass
         self._state["sheets"].pop(sheet, None)
         self.save()
         return removed

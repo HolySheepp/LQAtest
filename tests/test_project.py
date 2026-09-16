@@ -215,3 +215,55 @@ class TestGuiSettings:
 
         assert "clear" in DEFAULT_HOTKEYS
         assert "clear" in HOTKEY_LABELS
+
+
+class TestClearSheetWithAnOpenStore:
+    """清除頁簽時 lines.jsonl 可能正開著。
+
+    SessionStore 一建立就用附加模式握著這個檔，而 Windows 不讓人刪除
+    開啟中的檔案。先前這裡會丟 PermissionError，整個清除從中間斷掉 ——
+    截圖已經刪了，進度紀錄沒更新，介面也沒重畫，所以綠點還留在原地。
+    """
+
+    def _sheet_with_shots(self, tmp_path):
+        from lqa.record.project import Project
+
+        script = tmp_path / "文本.xlsx"
+        script.write_bytes(b"x")
+        project = Project(str(script), root=tmp_path / "projects")
+        shots = project.sheet_dir("AVG1") / "shots"
+        shots.mkdir(parents=True)
+        for index in range(3):
+            (shots / f"{index:05d}.png").write_bytes(b"png")
+        project.record_shot("AVG1", 0, "80201001")
+        return project
+
+    def test_clearing_succeeds_while_the_store_is_open(self, tmp_path):
+        project = self._sheet_with_shots(tmp_path)
+        store = project.store("AVG1")          # 這會開著 lines.jsonl
+        try:
+            removed = project.clear_sheet("AVG1")
+        finally:
+            store.close()
+        assert removed == 3
+
+    def test_progress_is_really_reset(self, tmp_path):
+        """截圖刪了但狀態沒更新的話，介面會繼續顯示已經不存在的進度。"""
+        project = self._sheet_with_shots(tmp_path)
+        store = project.store("AVG1")
+        try:
+            project.clear_sheet("AVG1")
+        finally:
+            store.close()
+        progress = project.progress("AVG1")
+        assert progress.taken == 0
+        assert progress.dialogue_ids == {}
+
+    def test_screenshots_are_gone_from_disk(self, tmp_path):
+        project = self._sheet_with_shots(tmp_path)
+        store = project.store("AVG1")
+        try:
+            project.clear_sheet("AVG1")
+        finally:
+            store.close()
+        assert list((project.sheet_dir("AVG1") / "shots").glob("*.png")) == []
