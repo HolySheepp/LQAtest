@@ -122,3 +122,14 @@ def next_flagged(current: int, count: int, rows: dict[int, RowResult],
             return index
         index += step
     return current
+
+
+def shot_name(captured, shots: dict[int, str], index: int) -> str:
+    """這一條的截圖檔名，沒有就回空字串。
+
+    解析後用紀錄裡的路徑；解析前紀錄還不存在，退回拍攝時掃到磁碟上的檔案。
+    剛拍完就點條目確認「這張到底拍到什麼」是最自然的動作，
+    沒道理要等解析完才給看。
+    """
+    name = getattr(captured, "screenshot", "") if captured is not None else ""
+    return name or shots.get(index, "")

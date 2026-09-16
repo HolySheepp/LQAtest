@@ -142,3 +142,35 @@ class TestJumpBetweenFlagged:
     def test_nothing_flagged_stays_put(self):
         rows = {0: RowResult([Issue(category=Category.PASS)])}
         assert next_flagged(0, 1, rows, 1) == 0
+
+
+class TestShotName:
+    """哪一條要顯示哪張截圖。
+
+    解析前也要看得到 —— 拍完馬上點條目確認拍到什麼是最自然的動作。
+    這裡失敗的症狀是「截圖那格永遠空白」，不會報錯，所以獨立測。
+    """
+
+    def setup_method(self):
+        from lqa.gui.results import shot_name
+
+        self.shot_name = shot_name
+        self.shots = {0: "shots/00000.png", 2: "shots/00002.png"}
+
+    def test_falls_back_to_the_file_on_disk_before_analysis(self):
+        assert self.shot_name(None, self.shots, 0) == "shots/00000.png"
+
+    def test_uses_the_recorded_path_after_analysis(self):
+        captured = CapturedLine(seq=0, timestamp=0.0, screenshot="shots/00007.png")
+        assert self.shot_name(captured, self.shots, 0) == "shots/00007.png"
+
+    def test_recorded_line_without_a_shot_still_falls_back(self):
+        """紀錄裡沒帶截圖路徑（舊 session）時不該就這樣放棄。"""
+        captured = CapturedLine(seq=0, timestamp=0.0)
+        assert self.shot_name(captured, self.shots, 2) == "shots/00002.png"
+
+    def test_nothing_for_an_entry_that_was_never_shot(self):
+        assert self.shot_name(None, self.shots, 1) == ""
+
+    def test_no_shots_at_all(self):
+        assert self.shot_name(None, {}, 0) == ""

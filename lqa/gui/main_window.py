@@ -19,7 +19,7 @@ from ..record.bound import BoundCapture
 from ..record.project import Project
 from ..record.store import SessionStore
 from .results import (ALL, FILTER_LABELS, is_visible, next_flagged,
-                      rows_from_result)
+                      rows_from_result, shot_name)
 from .settings import HOTKEY_LABELS, GuiSettings
 from .theme import build_qss, mix, palette_for
 from .titlebar import FramelessMixin, title_bar_qss
@@ -667,11 +667,15 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             if heard:
                 text = f"{heard}：{text}"
             self.detail_actual.setPlainText(text)
+        elif row is not None:
+            self.detail_actual.setPlainText("（未截圖）")
+        elif index in self.shots:
+            self.detail_actual.setPlainText("（已截圖，按「開始解析」才會讀出文字）")
         else:
-            self.detail_actual.setPlainText("" if row is None else "（未截圖）")
+            self.detail_actual.setPlainText("（尚未截圖）")
 
         self.detail_verdict.setText(self._verdict_text(row))
-        self.detail_shot.set_shot(self._shot_pixmap(captured))
+        self.detail_shot.set_shot(self._shot_pixmap(captured, index))
 
     def _verdict_text(self, row) -> str:
         if row is None:
@@ -679,15 +683,48 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         # 說明裡通常已經帶了相似度，不另外再列一次
         return "\n".join([row.label] + ([row.detail] if row.detail else []))
 
-    def _shot_pixmap(self, captured) -> QtGui.QPixmap:
+    def _shot_pixmap(self, captured, index: int) -> QtGui.QPixmap:
+        """這一條的截圖。解析前也要看得到。
+
+        剛拍完就點條目確認「這張到底拍到什麼」是最自然的動作，
+        沒道理要等解析完才給看。解析後用紀錄裡的路徑，
+        解析前直接看磁碟上有沒有這一條的截圖。
+        """
         self._full_shot = None
-        if captured is None or not captured.screenshot or self.store is None:
-            return QtGui.QPixmap()
-        path = self.store.dir / captured.screenshot
-        if not path.exists():
+        path = self._shot_path(captured, index)
+        if path is None or not path.exists():
             return QtGui.QPixmap()
         self._full_shot = path
-        return self._crop_to_dialogue(QtGui.QPixmap(str(path)), captured.layout)
+        return self._crop_to_dialogue(QtGui.QPixmap(str(path)),
+                                      self._layout_of(captured, path))
+
+    def _shot_path(self, captured, index: int) -> Optional[Path]:
+        name = shot_name(captured, self.shots, index)
+        if not name:
+            return None
+        if self.store is not None:
+            return self.store.dir / name
+        if self.project is not None and self.sheet:
+            return self.project.sheet_dir(self.sheet) / name
+        return None
+
+    def _layout_of(self, captured, path: Path) -> str:
+        """這張截圖用的是哪一套版面。
+
+        解析過就直接看紀錄。還沒解析、而且真的有兩套版面時才自己判一次 ——
+        判錯會裁到空白處。只有一套版面就不必算，省下每次點選的開銷。
+        """
+        if captured is not None and captured.layout:
+            return captured.layout
+        if self.profile is None or len(self.profile.layouts()) < 2:
+            return ""
+        from ..imageio import imread
+        from ..record.reader import pick_layout
+
+        frame = imread(path)
+        if frame is None:
+            return ""
+        return pick_layout(frame, self.profile.layouts())[0].key
 
     def _crop_to_dialogue(self, pixmap: QtGui.QPixmap,
                           layout_key: str = "") -> QtGui.QPixmap:
