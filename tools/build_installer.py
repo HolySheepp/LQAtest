@@ -44,12 +44,16 @@ def main() -> int:
         print("  winget install --id JRSoftware.InnoSetup")
         return 1
 
-    print(f"> {compiler} {SCRIPT}")
-    result = subprocess.run([str(compiler), str(SCRIPT)], cwd=ROOT)
+    sys.path.insert(0, str(ROOT))
+    from lqa import __version__
+
+    print(f"> {compiler} /DAppVersion={__version__} {SCRIPT}")
+    result = subprocess.run(
+        [str(compiler), f"/DAppVersion={__version__}", str(SCRIPT)], cwd=ROOT)
     if result.returncode != 0:
         return result.returncode
 
-    setup = ROOT / "dist" / "LQA-Checker-setup.exe"
+    setup = ROOT / "dist" / f"LQA-Checker-{__version__}-setup.exe"
     if setup.exists():
         print(f"\n安裝檔：{setup}（{setup.stat().st_size / 1e6:.0f} MB）")
     return 0

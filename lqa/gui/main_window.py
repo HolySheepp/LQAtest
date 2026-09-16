@@ -156,7 +156,9 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         self._heading_clicks = 0
         self._heading_last = QtCore.QTime.currentTime()
 
-        self.setWindowTitle("LQA Checker")
+        from .. import __version__
+
+        self.setWindowTitle(f"LQA Checker {__version__}")
         self.resize(1340, 800)
         self._apply_icon()
         self._build()
@@ -238,7 +240,9 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        bar = self.setup_frameless("LQA Checker")
+        from .. import __version__
+
+        bar = self.setup_frameless(f"LQA Checker {__version__}")
         if hasattr(self, "_icon"):
             bar.set_icon(self._icon)
         outer.addWidget(bar)

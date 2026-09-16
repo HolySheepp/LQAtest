@@ -23,6 +23,9 @@ def self_test() -> int:
     def say(text: str) -> None:
         lines.append(text)
 
+    from lqa import __version__
+
+    say(f"LQA Checker {__version__}")
     say(f"Python {sys.version.split()[0]}　打包狀態 {paths.is_frozen()}")
     say(f"資源目錄 {paths.resource_dir()}")
     say(f"設定目錄 {paths.base_dir() / 'config'}")

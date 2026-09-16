@@ -71,7 +71,10 @@ def main() -> int:
     size = sum(f.stat().st_size for f in DIST.rglob("*") if f.is_file())
     print(f"\n資料夾版：{DIST}（{size / 1e6:.0f} MB）")
 
-    archive = ROOT / "dist" / "LQA-Checker-portable.zip"
+    sys.path.insert(0, str(ROOT))
+    from lqa import __version__
+
+    archive = ROOT / "dist" / f"LQA-Checker-{__version__}-portable.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for path in sorted(DIST.rglob("*")):
             if path.is_file():

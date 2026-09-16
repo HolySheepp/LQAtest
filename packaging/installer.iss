@@ -9,7 +9,11 @@
 ; 腳本會先確認 dist 裡的東西是新的。
 
 #define AppName "LQA Checker"
-#define AppVersion "1.0.0"
+; 版本由 tools/build_installer.py 用 /DAppVersion= 帶進來，
+; 這裡只是沒帶的時候的退路
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 #define AppPublisher "Cela"
 #define AppExe "LQA Checker.exe"
 
@@ -24,7 +28,8 @@ DisableProgramGroupPage=yes
 ; 裝在使用者目錄，不必管理員權限 —— 公司電腦不一定給得起
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=LQA-Checker-setup
+OutputBaseFilename=LQA-Checker-{#AppVersion}-setup
+VersionInfoVersion={#AppVersion}
 SetupIconFile=..\lqa\gui\assets\icon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2/max
