@@ -563,7 +563,7 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         用方向鍵掃過清單會一路頓。檔案或對照表換過就整個丟掉重來，
         所以不會拿到舊內容。
         """
-        from ..compare.script_loader import load_script, load_speaker_map
+        from ..compare.script_loader import load_script, read_speaker_map
 
         def stamp(path: str) -> float:
             try:
@@ -577,11 +577,12 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
             self._sheet_cache_key = key
             self._sheet_cache: dict[str, list] = {}
         if name not in self._sheet_cache:
-            speakers = {}
-            if Path(self.settings.speakers_path).exists():
-                speakers = load_speaker_map(self.settings.speakers_path)
+            table = read_speaker_map(
+                self.settings.speakers_path
+                if Path(self.settings.speakers_path).exists() else None)
+            self._speaker_conflicts = table.conflicts
             self._sheet_cache[name] = load_script(
-                self.script_path, speakers, sheets=[name])
+                self.script_path, table.names, sheets=[name])
         return self._sheet_cache[name]
 
     def _reload_shots(self) -> None:
@@ -1191,6 +1192,15 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         from . import sound
 
         sound.play(self.settings.sound_on_finish)
+        conflicts = getattr(self, "_speaker_conflicts", {})
+        if conflicts:
+            # 一個中文名填了兩種英文名時只會採用第一個，另一半會安靜地
+            # 永遠對不上 —— 看起來像遊戲有問題，其實是表填錯了
+            shown = "、".join(f"{zh}（{'/'.join(names)}）"
+                             for zh, names in list(conflicts.items())[:3])
+            self.status.setText(
+                self.status.text()
+                + f"　對照表有 {len(conflicts)} 個名字填了兩種英文：{shown}")
         missing = self._unmapped_speakers()
         if missing:
             # 對照表沒有英文名就沒有正確答案，發話者那一項等於沒查 ——

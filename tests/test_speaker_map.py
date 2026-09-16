@@ -232,3 +232,190 @@ class TestHandWrittenFormats:
         path.write_text("蘇青,Suqing", encoding="utf-8")
         with pytest.raises(ValueError, match="xlsx"):
             load_speaker_map(path)
+
+
+class TestTableConflicts:
+    """同一個中文名被填了兩種英文名。
+
+    採用第一個，但一定要講出來 —— 這幾乎都是表本身填錯，
+    而且錯的那一半會安靜地永遠對不上，看起來像是遊戲有問題。
+    """
+
+    def test_clean_table_reports_nothing(self, tmp_path):
+        from lqa.compare.script_loader import read_speaker_map
+
+        table = read_speaker_map(
+            write_csv(tmp_path, [["蘇青", "Suqing"], ["涅維", "Nev"]]))
+        assert table.conflicts == {}
+
+    def test_conflicting_entries_are_listed(self, tmp_path):
+        from lqa.compare.script_loader import read_speaker_map
+
+        table = read_speaker_map(write_csv(tmp_path, [
+            ["蘇青", "Suqing"], ["涅維", "Nev"], ["蘇青", "Cyan"]]))
+        assert table.conflicts == {"蘇青": ["Suqing", "Cyan"]}
+
+    def test_the_first_one_still_wins(self, tmp_path):
+        from lqa.compare.script_loader import read_speaker_map
+
+        table = read_speaker_map(write_csv(tmp_path, [
+            ["蘇青", "Suqing"], ["蘇青", "Cyan"]]))
+        assert table.names["蘇青"] == "Suqing"
+
+    def test_repeated_but_identical_rows_are_not_a_conflict(self, tmp_path):
+        """大表難免重複貼到，內容一樣就不算問題。"""
+        from lqa.compare.script_loader import read_speaker_map
+
+        table = read_speaker_map(write_csv(tmp_path, [
+            ["蘇青", "Suqing"], ["蘇青", "Suqing"]]))
+        assert table.conflicts == {}
+
+    def test_one_english_name_for_several_chinese_names_is_fine(self, tmp_path):
+        """大廚和廚師都翻成 Chef 是正常的，不該報成衝突。"""
+        from lqa.compare.script_loader import read_speaker_map
+
+        table = read_speaker_map(write_csv(tmp_path, [
+            ["大廚", "Chef"], ["廚師", "Chef"]]))
+        assert table.conflicts == {}
+
+
+class TestInGameNameConsistency:
+    """對照表沒有這個名字時，仍然查得出「同一個角色前後譯名不一致」。
+
+    不需要正確答案 —— 拿畫面自己和自己比就看得出來。
+    這正是對照表補不齊時最容易漏掉的一類問題。
+    """
+
+    def _run(self, sample_xlsx, speaker_texts, mapping=None):
+        from lqa.compare.classify import compare
+        from lqa.compare.script_loader import load_script
+        from lqa.model import CapturedLine
+
+        expected = load_script(sample_xlsx, mapping or {})
+        captured = [
+            CapturedLine(seq=i, timestamp=0.0, body_text=e.target_en,
+                         speaker_text=speaker_texts(i, e))
+            for i, e in enumerate(expected)
+        ]
+        return expected, compare(expected, captured)
+
+    def test_two_names_for_one_character_are_flagged(self, sample_xlsx):
+        from lqa.model import Category
+
+        # 蘇青 前面叫 Suqing，後面忽然變成 Cyan
+        seen = {"n": 0}
+
+        def speaker(i, e):
+            if e.speaker_zh != "蘇青":
+                return e.speaker_zh
+            seen["n"] += 1
+            return "Cyan(1)" if seen["n"] > 1 else "Suqing(1)"
+
+        _expected, result = self._run(sample_xlsx, speaker)
+        flagged = [i for i in result.problems
+                   if i.category is Category.SPEAKER_VARIANT]
+        assert flagged, "同一個角色兩種譯名應該要被抓到"
+        assert "蘇青" in flagged[0].detail
+        assert "Suqing" in flagged[0].detail and "Cyan" in flagged[0].detail
+
+    def test_a_consistent_name_is_not_flagged(self, sample_xlsx):
+        from lqa.model import Category
+
+        _expected, result = self._run(
+            sample_xlsx, lambda i, e: f"{e.speaker_zh}(1)" if e.speaker_zh else "")
+        assert not [i for i in result.problems
+                    if i.category is Category.SPEAKER_VARIANT]
+
+    def test_ocr_noise_is_not_treated_as_a_different_name(self, sample_xlsx):
+        """把 Suqing 讀成 Suqinq 是辨識誤差，不是譯名不一致。"""
+        from lqa.model import Category
+
+        seen = {"n": 0}
+
+        def speaker(i, e):
+            if e.speaker_zh != "蘇青":
+                return e.speaker_zh
+            seen["n"] += 1
+            return "Suqinq(1)" if seen["n"] > 1 else "Suqing(1)"
+
+        _expected, result = self._run(sample_xlsx, speaker)
+        assert not [i for i in result.problems
+                    if i.category is Category.SPEAKER_VARIANT]
+
+    def test_names_with_an_answer_key_are_left_to_the_normal_check(self, sample_xlsx):
+        """對照表查得到的交給發話者錯誤，不要同一件事報兩次。"""
+        from lqa.model import Category
+
+        seen = {"n": 0}
+
+        def speaker(i, e):
+            if e.speaker_zh != "蘇青":
+                return e.speaker_zh
+            seen["n"] += 1
+            return "Cyan(1)" if seen["n"] > 1 else "Suqing(1)"
+
+        _expected, result = self._run(sample_xlsx, speaker, {"蘇青": "Suqing"})
+        assert not [i for i in result.problems
+                    if i.category is Category.SPEAKER_VARIANT]
+        assert [i for i in result.problems if i.category is Category.SPEAKER]
+
+
+class TestSpeakerChecksNeedTheLineToMatchFirst:
+    """對白本身就對不上時，發話者比對沒有意義。
+
+    這張截圖和這個條目的配對本來就不成立，拿它的發話者去比只會在
+    「順序不一致」上面再疊一筆發話者錯誤 —— 實測一個沒對齊的錄製
+    會多出 26 筆這種衍生訊息，把真正的問題整個淹掉。
+    """
+
+    def _result(self, sample_xlsx, body_for, speaker_for, mapping):
+        from lqa.compare.classify import compare
+        from lqa.compare.script_loader import load_script
+        from lqa.model import CapturedLine
+
+        expected = load_script(sample_xlsx, mapping)
+        captured = [
+            CapturedLine(seq=i, timestamp=0.0, body_text=body_for(i, e),
+                         speaker_text=speaker_for(i, e))
+            for i, e in enumerate(expected)
+        ]
+        return expected, compare(expected, captured)
+
+    def test_no_speaker_issue_piled_on_a_mismatched_line(self, sample_xlsx):
+        from lqa.model import Category
+
+        mapping = {"蘇青": "Suqing", "涅維": "Nev"}
+        expected, result = self._result(
+            sample_xlsx,
+            lambda i, e: "Totally unrelated sentence." if i == 2 else e.target_en,
+            lambda i, e: "WrongName(1)" if i == 2 else e.speaker_en,
+            mapping)
+        wrong_line = expected[2].dialogue_id
+        kinds = {i.category for i in result.problems if i.dialogue_id == wrong_line}
+        assert Category.SPEAKER not in kinds
+        assert kinds == {Category.MISMATCH}
+
+    def test_a_matching_line_with_a_wrong_speaker_is_still_flagged(self, sample_xlsx):
+        """關掉的只是衍生訊息，真正的「對白正確但發話者錯」還是要抓。"""
+        from lqa.model import Category
+
+        mapping = {"蘇青": "Suqing", "涅維": "Nev"}
+        expected, result = self._result(
+            sample_xlsx, lambda i, e: e.target_en,
+            lambda i, e: "WrongName(1)" if i == 2 else e.speaker_en, mapping)
+        kinds = {i.category for i in result.problems
+                 if i.dialogue_id == expected[2].dialogue_id}
+        assert kinds == {Category.SPEAKER}
+
+    def test_truncated_lines_still_get_checked(self, sample_xlsx):
+        """超框是文字被截斷，但確實是這一句，發話者仍有參考價值。"""
+        from lqa.model import Category
+
+        mapping = {"蘇青": "Suqing", "涅維": "Nev"}
+        expected, result = self._result(
+            sample_xlsx,
+            lambda i, e: e.target_en[:len(e.target_en) // 2] if i == 2 else e.target_en,
+            lambda i, e: "WrongName(1)" if i == 2 else e.speaker_en, mapping)
+        kinds = {i.category for i in result.problems
+                 if i.dialogue_id == expected[2].dialogue_id}
+        assert Category.SPEAKER in kinds

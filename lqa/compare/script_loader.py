@@ -167,7 +167,17 @@ def _speaker_columns(header: Sequence[Any]) -> tuple[int, int] | None:
     return zh_idx, en_idx
 
 
-def load_speaker_map(path: str | Path | None) -> dict[str, str]:
+@dataclass
+class SpeakerMap:
+    """對照表的內容，外加讀的時候發現的問題。"""
+
+    names: dict[str, str]
+    # 同一個中文名被填了兩種以上的英文名。第一個會被採用，其餘忽略 ——
+    # 但這幾乎一定是表本身填錯了，不講出來就會一路錯下去
+    conflicts: dict[str, list[str]]
+
+
+def read_speaker_map(path: str | Path | None) -> SpeakerMap:
     """讀取跨檔案共用的『中文發話者名 -> 英文發話者名』對照表。
 
     這張表是發話者檢查的正確答案來源：文本裡的發話者是中文，
@@ -184,7 +194,7 @@ def load_speaker_map(path: str | Path | None) -> dict[str, str]:
     沒有就當成「第一欄中文、第二欄英文」。
     """
     if not path:
-        return {}
+        return SpeakerMap({}, {})
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"找不到發話者對照表：{p}")
@@ -202,7 +212,7 @@ def load_speaker_map(path: str | Path | None) -> dict[str, str]:
 
     rows = [r for r in rows if any(str(c).strip() for c in r if c is not None)]
     if not rows:
-        return {}
+        return SpeakerMap({}, {})
 
     columns = None
     body = rows
@@ -216,6 +226,7 @@ def load_speaker_map(path: str | Path | None) -> dict[str, str]:
 
     zh_idx, en_idx = columns
     mapping: dict[str, str] = {}
+    seen: dict[str, list[str]] = {}
     for row in body:
         zh, en = _cell(row, zh_idx), _cell(row, en_idx)
         if not zh or not en:
@@ -223,7 +234,15 @@ def load_speaker_map(path: str | Path | None) -> dict[str, str]:
         if _norm_header(zh) in SPEAKER_ZH_ALIASES:
             continue  # 殘留的標題列
         mapping.setdefault(zh, en)
-    return mapping
+        if en not in seen.setdefault(zh, []):
+            seen[zh].append(en)
+    return SpeakerMap(mapping,
+                      {zh: names for zh, names in seen.items() if len(names) > 1})
+
+
+def load_speaker_map(path: str | Path | None) -> dict[str, str]:
+    """只要對照表本身。想知道表有沒有填錯請用 read_speaker_map。"""
+    return read_speaker_map(path).names
 
 
 ALL_SHEETS = "all"

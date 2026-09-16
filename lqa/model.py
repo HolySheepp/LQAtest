@@ -26,7 +26,8 @@ class Category(str, Enum):
     ORDER = "ORDER"                    # 順序不一致
     MISSING = "MISSING"                # 遊戲中沒這句
     NOT_CAPTURED = "NOT_CAPTURED"      # 使用者沒有截到這條（跳過或漏拍）
-    SPEAKER = "SPEAKER"                # 發話者錯誤
+    SPEAKER = "SPEAKER"                # 發話者錯誤（和對照表的答案不符）
+    SPEAKER_VARIANT = "SPEAKER_VARIANT"  # 同一個發話者在遊戲中出現不只一種譯名
     EXTRA = "EXTRA"                    # 畫面出現、但文本中找不到對應
 
 
@@ -39,6 +40,7 @@ CATEGORY_LABEL_ZH = {
     Category.MISSING: "遊戲中沒這句",
     Category.NOT_CAPTURED: "未截圖",
     Category.SPEAKER: "發話者錯誤",
+    Category.SPEAKER_VARIANT: "發話者譯名不一致",
     Category.EXTRA: "文本中無此句",
 }
 
