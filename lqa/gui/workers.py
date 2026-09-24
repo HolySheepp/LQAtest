@@ -221,8 +221,11 @@ class AutoRecordWorker(QtCore.QThread):
         self._stop = True
 
     def run(self) -> None:
+        import time
+
         from ..capture.mss_backend import open_capture
         from ..detect import textmask as tm
+        from ..detect.gate import DialogueGate, explain
         from ..detect.linetracker import LineTracker
 
         capture = None
@@ -233,6 +236,7 @@ class AutoRecordWorker(QtCore.QThread):
                 self.profile.capture_backend, roi=self.profile.watch_roi())
             tracker = LineTracker(self.profile.stability,
                                   self.profile.mask.min_text_pixels)
+            gate = DialogueGate(self.profile.gate)
             in_cutscene = False
             while not self._stop:
                 frame = capture.grab()
@@ -248,8 +252,16 @@ class AutoRecordWorker(QtCore.QThread):
                 crop = tm.crop(frame, self.profile.body_roi)
 
                 # 過場動畫時對白框整個消失，露出底下的畫面。那些畫面內容
-                # 會被當成筆畫，追蹤器就以為一直在換句，狂吐假的句子出來
-                if tm.looks_like_cutscene(crop, self.cutscene_median):
+                # 會被當成筆畫，追蹤器就以為一直在換句，狂吐假的句子出來。
+                # 框好範圍就用形狀判斷，沒框就退回看整體亮度中位數
+                if self.profile.gate.configured:
+                    playing = gate.update(frame, time.monotonic() * 1000)
+                    reason = explain(frame, self.profile.gate)
+                else:
+                    playing = not tm.looks_like_cutscene(crop, self.cutscene_median)
+                    reason = f"亮度中位數 {tm.value_median(crop)}"
+
+                if not playing:
                     if not in_cutscene:
                         in_cutscene = True
                         # 框消失前顯示的那一句是完整的，要先吐出來再停
@@ -257,9 +269,7 @@ class AutoRecordWorker(QtCore.QThread):
                         if pending is not None:
                             self.line_ready.emit(pending.frame)
                         tracker.reset()
-                        self.status.emit(
-                            f"過場中，暫停偵測（亮度中位數 "
-                            f"{tm.value_median(crop)}）")
+                        self.status.emit(f"過場中，暫停偵測（{reason}）")
                     self.msleep(self.poll_ms)
                     continue
                 if in_cutscene:

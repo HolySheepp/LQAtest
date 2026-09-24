@@ -187,6 +187,11 @@ class DebugWindow(QtWidgets.QWidget):
         root.addWidget(self.info)
 
         bottom = QtWidgets.QHBoxLayout()
+        gate = QtWidgets.QPushButton("對白判定範圍")
+        gate.setToolTip("自動錄製用來分辨對白與過場動畫的範圍")
+        gate.clicked.connect(self._open_gate)
+        bottom.addWidget(gate)
+
         reset = QtWidgets.QPushButton("恢復預設")
         reset.setToolTip("把目前範圍的取字參數還原成預設值，ROI 不動")
         reset.clicked.connect(self._reset_defaults)
@@ -409,6 +414,22 @@ class DebugWindow(QtWidgets.QWidget):
             self.info.setText(f"辨識失敗：{exc}")
             return
         self.info.setText(f"讀到：{result.text!r}　信心 {result.confidence:.3f}")
+
+    def _open_gate(self) -> None:
+        from .gate_dialog import GateDialog
+
+        before = (list(self.profile.gate.black_rois),
+                  list(self.profile.gate.lit_rois),
+                  self.profile.gate.tolerance, self.profile.gate.hold_ms)
+        dialog = GateDialog(self.profile, self.frame, self)
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            count = (len(self.profile.gate.black_rois)
+                     + len(self.profile.gate.lit_rois))
+            self.info.setText(f"對白判定範圍共 {count} 塊，記得按「儲存設定」")
+            return
+        # 取消就還原 —— 對話框是直接改 profile 的，不還原等於取消沒有用
+        (self.profile.gate.black_rois, self.profile.gate.lit_rois,
+         self.profile.gate.tolerance, self.profile.gate.hold_ms) = before
 
     def _reset_defaults(self) -> None:
         """把取字參數還原成預設值。

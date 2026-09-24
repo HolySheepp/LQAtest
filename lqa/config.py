@@ -150,6 +150,22 @@ MASK_FALLBACK = {
 }
 
 
+@dataclass
+class GateConfig:
+    """判斷對白在不在所需要的範圍與參數。用法見 detect/gate.py。"""
+
+    # 必須是純黑的範圍：對白框的底，挑不會有字的地方
+    black_rois: list[Rect] = field(default_factory=list)
+    # 必須不是純黑的範圍：用來擋掉整個畫面變黑的轉場
+    lit_rois: list[Rect] = field(default_factory=list)
+    tolerance: int = 10       # 多暗才算全黑。純黑是 0，壓縮會讓它不是剛好 0
+    hold_ms: int = 250        # 條件要連續成立多久才算數
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.black_rois)
+
+
 @dataclass(frozen=True)
 class RegionSet:
     """一套對白版面：對白框加姓名框，各自的範圍與取字參數。"""
@@ -184,6 +200,8 @@ class Profile:
     npc_speaker_mask: Optional[MaskConfig] = None  # 不給就沿用 speaker_mask
     stability: StabilityConfig = field(default_factory=StabilityConfig)
     ocr: OcrConfig = field(default_factory=OcrConfig)
+    # 自動錄製用來判斷「現在是對白還是過場」的範圍。詳見 detect/gate.py
+    gate: "GateConfig" = field(default_factory=lambda: GateConfig())
 
     def effective_speaker_mask(self) -> MaskConfig:
         return self.mask_for("speaker")
@@ -267,6 +285,7 @@ class Profile:
                               if data.get("npc_speaker_mask") else None),
             stability=_build(StabilityConfig, data.get("stability")),
             ocr=_build(OcrConfig, data.get("ocr")),
+            gate=_build_gate(data.get("gate")),
         )
 
     def save(self, path: str | Path) -> Path:
@@ -284,6 +303,31 @@ class Profile:
         if not p.exists():
             raise FileNotFoundError(f"找不到 profile：{p}")
         return cls.from_dict(json.loads(p.read_text(encoding="utf-8")))
+
+
+def _build_gate(data: Any) -> GateConfig:
+    """讀回判定範圍。範圍是 list of rect，_build 的一般路徑處理不了。"""
+    if not isinstance(data, dict):
+        return GateConfig()
+
+    def rects(value: Any) -> list[Rect]:
+        if not isinstance(value, list):
+            return []
+        out: list[Rect] = []
+        for item in value:
+            try:
+                out.append(tuple(int(v) for v in item))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue        # 壞掉的範圍跳過，不要讓整份 profile 讀不起來
+        return out
+
+    base = GateConfig()
+    return GateConfig(
+        black_rois=rects(data.get("black_rois")),
+        lit_rois=rects(data.get("lit_rois")),
+        tolerance=int(data.get("tolerance", base.tolerance)),
+        hold_ms=int(data.get("hold_ms", base.hold_ms)),
+    )
 
 
 def _spec(region: str) -> tuple[str, str, str, str]:
