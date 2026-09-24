@@ -399,7 +399,8 @@ class MainWindow(FramelessMixin, QtWidgets.QMainWindow):
         if self.bound is None:
             self._error("無法自動錄製", "請先按「開始錄製」，自動錄製會填進目前的游標位置")
             return
-        worker = AutoRecordWorker(self.profile, self.settings.auto_poll_ms, self)
+        worker = AutoRecordWorker(self.profile, self.settings.auto_poll_ms,
+                                  self.settings.auto_cutscene_median, self)
         worker.line_ready.connect(self._on_auto_line)
         worker.status.connect(self.status.setText)
         worker.failed.connect(lambda m: (self._stop_auto_record(),

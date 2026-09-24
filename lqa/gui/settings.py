@@ -54,6 +54,9 @@ class GuiSettings:
     # 開發者模式：主視窗多出實驗中的自動錄製
     developer_mode: bool = False
     auto_poll_ms: int = 60
+    # 自動錄製：對白框區域的亮度中位數超過這個值就當成過場動畫，暫停偵測。
+    # 0 代表不檢查。對白框是純黑的才適用，數值看調試視窗的「亮度中位數」
+    auto_cutscene_median: int = 0
 
     @classmethod
     def load(cls, path: Path = SETTINGS_PATH) -> "GuiSettings":

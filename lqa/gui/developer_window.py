@@ -67,6 +67,35 @@ class DeveloperWindow(QtWidgets.QWidget):
         interval.addStretch(1)
         layout.addLayout(interval)
 
+        cutscene = QtWidgets.QHBoxLayout()
+        cutscene.addWidget(QtWidgets.QLabel("過場門檻"))
+        self.cutscene = QtWidgets.QSpinBox()
+        self.cutscene.setRange(0, 255)
+        self.cutscene.setSpecialValueText("不檢查")
+        self.cutscene.setValue(settings.auto_cutscene_median)
+        self.cutscene.valueChanged.connect(self._on_cutscene)
+        cutscene.addWidget(self.cutscene)
+        cutscene.addWidget(QtWidgets.QLabel("亮度中位數超過這個值就當成過場"))
+        cutscene.addStretch(1)
+        layout.addLayout(cutscene)
+
+        cutscene_note = QtWidgets.QLabel(
+            "過場動畫時對白框會整個消失，露出底下的畫面。那些畫面內容會被
+"
+            "當成筆畫，於是自動錄製以為一直在換句，狂吐假的句子出來。
+
+"
+            "對白框是純黑的話，框在的時候這塊區域亮度中位數幾乎是 0，
+"
+            "過場時會跳到上百，所以拿這個當判準最乾脆。實際數值看調試視窗
+"
+            "資訊列的「亮度中位數」：對白框在的時候看一次、過場時看一次，
+"
+            "門檻填中間。對白框是半透明漸層的話底色本來就不黑，填 0 關掉。")
+        cutscene_note.setProperty("role", "hint")
+        cutscene_note.setWordWrap(True)
+        layout.addWidget(cutscene_note)
+
         layout.addStretch(1)
         close = QtWidgets.QPushButton("關閉")
         close.clicked.connect(self.close)
@@ -90,4 +119,8 @@ class DeveloperWindow(QtWidgets.QWidget):
 
     def _on_interval(self, value: int) -> None:
         self.settings.auto_poll_ms = value
+        self.settings.save()
+
+    def _on_cutscene(self, value: int) -> None:
+        self.settings.auto_cutscene_median = value
         self.settings.save()

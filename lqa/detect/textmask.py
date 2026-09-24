@@ -184,6 +184,31 @@ def text_pixel_count(mask: np.ndarray) -> int:
     return int(np.count_nonzero(mask))
 
 
+def value_median(image: np.ndarray) -> int:
+    """這塊區域的亮度中位數。
+
+    用中位數而不是平均：對白框是純黑底加白字，白字只佔一小部分像素，
+    中位數幾乎不受影響（實測 0），平均卻會被拉到 16~25。
+    """
+    return int(np.median(value_channel(image)))
+
+
+def looks_like_cutscene(image: np.ndarray, limit: int) -> bool:
+    """對白框在不在。
+
+    對白框是純黑的，所以框在的時候這塊區域的亮度中位數幾乎是 0；
+    過場動畫時黑底會整個消失，露出底下的畫面，中位數就跳到上百
+    （實測：純黑框 0、過場畫面 137）。
+
+    limit <= 0 代表不檢查。對白框是半透明漸層的遊戲底色本來就不黑
+    （實測中位數 34~68），硬套這個判準會把所有對白都當成過場擋掉，
+    所以預設關閉，由使用者看著實際數值決定要不要開。
+    """
+    if limit <= 0:
+        return False
+    return value_median(image) > limit
+
+
 def content_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
     """遮罩中前景像素的外接框，用來判斷文字是否貼齊 ROI 邊緣（超框輔助訊號）。"""
     ys, xs = np.nonzero(mask)

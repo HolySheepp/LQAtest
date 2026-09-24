@@ -209,10 +209,12 @@ class AutoRecordWorker(QtCore.QThread):
     status = QtCore.Signal(str)
 
     def __init__(self, profile: Profile, poll_ms: int = 60,
+                 cutscene_median: int = 0,
                  parent: QtCore.QObject | None = None):
         super().__init__(parent)
         self.profile = profile
         self.poll_ms = poll_ms
+        self.cutscene_median = cutscene_median
         self._stop = False
 
     def stop(self) -> None:
@@ -231,6 +233,7 @@ class AutoRecordWorker(QtCore.QThread):
                 self.profile.capture_backend, roi=self.profile.watch_roi())
             tracker = LineTracker(self.profile.stability,
                                   self.profile.mask.min_text_pixels)
+            in_cutscene = False
             while not self._stop:
                 frame = capture.grab()
                 reason = capture.unavailable()
@@ -243,6 +246,26 @@ class AutoRecordWorker(QtCore.QThread):
                     continue
                 last_reason = ""
                 crop = tm.crop(frame, self.profile.body_roi)
+
+                # 過場動畫時對白框整個消失，露出底下的畫面。那些畫面內容
+                # 會被當成筆畫，追蹤器就以為一直在換句，狂吐假的句子出來
+                if tm.looks_like_cutscene(crop, self.cutscene_median):
+                    if not in_cutscene:
+                        in_cutscene = True
+                        # 框消失前顯示的那一句是完整的，要先吐出來再停
+                        pending = tracker.flush()
+                        if pending is not None:
+                            self.line_ready.emit(pending.frame)
+                        tracker.reset()
+                        self.status.emit(
+                            f"過場中，暫停偵測（亮度中位數 "
+                            f"{tm.value_median(crop)}）")
+                    self.msleep(self.poll_ms)
+                    continue
+                if in_cutscene:
+                    in_cutscene = False
+                    self.status.emit("對白框回來了，繼續偵測")
+
                 event = tracker.feed(frame, tm.build_mask(crop, self.profile.mask))
                 if event is not None:
                     self.line_ready.emit(event.frame)
